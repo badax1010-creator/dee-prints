@@ -47,6 +47,8 @@ const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
+storage.maxUploadRetryTime = 8000;
+storage.maxOperationRetryTime = 8000;
 
 export enum OperationType {
   CREATE = 'create',
@@ -137,6 +139,66 @@ export interface UploadedStorageFileResult {
   downloadUrl: string;
 }
 
+function resolveCanonicalMimeType(file: File): string {
+  const ext = file.name.split('.').pop()?.toLowerCase() || '';
+  if (ext === 'pdf') return 'application/pdf';
+  if (ext === 'doc') return 'application/msword';
+  if (ext === 'docx') {
+    return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  }
+  return file.type || 'application/octet-stream';
+}
+
+function formatFirebaseStorageError(
+  err: unknown,
+  filename: string,
+  bucketName: string,
+): Error {
+  const code =
+    err && typeof err === 'object' && 'code' in err
+      ? String((err as { code?: unknown }).code)
+      : '';
+  const rawServerResponse =
+    err &&
+    typeof err === 'object' &&
+    'customData' in err &&
+    (err as { customData?: { serverResponse?: unknown } }).customData &&
+    typeof (err as { customData?: { serverResponse?: unknown } }).customData === 'object'
+      ? String((err as { customData?: { serverResponse?: unknown } }).customData?.serverResponse || '')
+      : '';
+  const detail = err instanceof Error ? err.message : String(err);
+
+  if (code === 'storage/unauthorized') {
+    return new Error(
+      `Upload permission denied for "${filename}" (${code}). Check Firebase Storage security rules for bucket "${bucketName}".`,
+    );
+  }
+  if (
+    code === 'storage/bucket-not-found' ||
+    code === 'storage/project-not-found' ||
+    (code === 'storage/unknown' &&
+      (!rawServerResponse || rawServerResponse.includes('404') || detail.includes('404')))
+  ) {
+    return new Error(
+      `Firebase Storage bucket "${bucketName}" is not provisioned or returned 404 Not Found (${code}). Enable Cloud Storage in Firebase Console for project "${firebaseConfig.projectId}".`,
+    );
+  }
+  if (code === 'storage/retry-limit-exceeded') {
+    return new Error(
+      `Upload timed out while connecting to Firebase Storage bucket "${bucketName}" (${code}). Verify Cloud Storage is enabled and CORS/network access is permitted.`,
+    );
+  }
+  if (code === 'storage/quota-exceeded') {
+    return new Error(`Firebase Storage quota exceeded while uploading "${filename}".`);
+  }
+  if (code === 'storage/canceled') {
+    return new Error(
+      `Upload stalled at 0% and was cancelled for "${filename}". Check Firebase Storage bucket "${bucketName}" configuration and network connection.`,
+    );
+  }
+  return new Error(`Firebase Storage upload failed for "${filename}" (${code || 'unknown'}): ${detail}`);
+}
+
 export async function uploadFilesToFirebaseStorageWithProgress(
   orderId: string,
   files: File[],
@@ -152,6 +214,11 @@ export async function uploadFilesToFirebaseStorageWithProgress(
     throw new Error('No document selected for Firebase Storage upload.');
   }
 
+  const bucketName = firebaseConfig.storageBucket || storage.app.options.storageBucket || '';
+  if (!bucketName) {
+    throw new Error('Firebase Storage bucket is missing from firebase-applet-config.json.');
+  }
+
   const uploaded: UploadedStorageFileResult[] = [];
   const filePaths: string[] = [];
   let labelStoragePath = '';
@@ -164,15 +231,38 @@ export async function uploadFilesToFirebaseStorageWithProgress(
     const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'document';
     const storagePath = `orders/${orderId}/${safeName}`;
     const fileRef = ref(storage, storagePath);
+    const contentType = resolveCanonicalMimeType(file);
 
     try {
       await new Promise<void>((resolve, reject) => {
-        const task = uploadBytesResumable(fileRef, file, {
-          contentType: file.type || 'application/octet-stream',
-        });
+        const task = uploadBytesResumable(fileRef, file, { contentType });
+        let highestBytes = 0;
+        let settled = false;
+
+        // Guard against browser CORS preflight / 404 XHR loops that hang at 0 bytes
+        const stallTimer = setTimeout(() => {
+          if (!settled && highestBytes === 0) {
+            settled = true;
+            try {
+              task.cancel();
+            } catch {
+              // Ignore cancel errors
+            }
+            reject(
+              new Error(
+                `Firebase Storage upload stalled at 0% for "${file.name}". Bucket "${bucketName}" may not be activated in Firebase Console or CORS blocked the upload.`,
+              ),
+            );
+          }
+        }, 9000);
+
         task.on(
           'state_changed',
           (snapshot) => {
+            if (snapshot.bytesTransferred > highestBytes) {
+              highestBytes = snapshot.bytesTransferred;
+              clearTimeout(stallTimer);
+            }
             if (onProgress && totalBytes > 0) {
               const overall = Math.min(
                 95,
@@ -181,12 +271,27 @@ export async function uploadFilesToFirebaseStorageWithProgress(
               onProgress(overall);
             }
           },
-          (err) => reject(err),
-          () => resolve(),
+          (err) => {
+            clearTimeout(stallTimer);
+            if (settled) return;
+            settled = true;
+            reject(formatFirebaseStorageError(err, file.name, bucketName));
+          },
+          () => {
+            clearTimeout(stallTimer);
+            if (settled) return;
+            settled = true;
+            resolve();
+          },
         );
       });
 
+      // Wait for upload task completion before requesting the download URL
       const downloadUrl = await getDownloadURL(fileRef);
+      if (!downloadUrl || !/^https?:\/\//i.test(downloadUrl)) {
+        throw new Error(`Firebase Storage did not return a valid download URL for "${file.name}".`);
+      }
+
       completedBytes += file.size;
       filePaths.push(storagePath);
       uploaded.push({
@@ -195,30 +300,87 @@ export async function uploadFilesToFirebaseStorageWithProgress(
         downloadUrl,
       });
     } catch (err) {
-      const code =
-        err && typeof err === 'object' && 'code' in err
-          ? String((err as { code?: unknown }).code)
-          : '';
-      const detail = err instanceof Error ? err.message : String(err);
-      if (code === 'storage/unauthorized') {
-        throw new Error(
-          `Upload permission denied for "${file.name}". Please ensure the file is a valid PDF, DOC, or DOCX under 20 MB.`,
-        );
+      if (
+        err instanceof Error &&
+        (err.message.includes('Firebase Storage') || err.message.includes('Upload permission'))
+      ) {
+        throw err;
       }
-      throw new Error(`Failed to upload "${file.name}" to Firebase Storage: ${detail}`);
+      throw formatFirebaseStorageError(err, file.name, bucketName);
     }
   }
 
   if (envelopeHtml) {
-    labelStoragePath = `orders/${orderId}/envelope-label.html`;
-    const labelRef = ref(storage, labelStoragePath);
-    const labelBlob = new Blob([envelopeHtml], { type: 'text/html;charset=utf-8' });
-    await uploadBytes(labelRef, labelBlob, { contentType: 'text/html;charset=utf-8' });
-    labelDownloadUrl = await getDownloadURL(labelRef);
+    try {
+      labelStoragePath = `orders/${orderId}/envelope-label.html`;
+      const labelRef = ref(storage, labelStoragePath);
+      const labelBlob = new Blob([envelopeHtml], { type: 'text/html;charset=utf-8' });
+      await uploadBytes(labelRef, labelBlob, { contentType: 'text/html;charset=utf-8' });
+      labelDownloadUrl = await getDownloadURL(labelRef);
+    } catch (labelErr) {
+      console.warn('Non-fatal envelope label Storage upload warning:', labelErr);
+    }
   }
 
   if (onProgress) onProgress(100);
   return { uploaded, filePaths, labelStoragePath, labelDownloadUrl };
+}
+
+export function uploadSessionViaBackendWithProgress(
+  payload: unknown,
+  onProgress?: (percent: number) => void,
+): Promise<{
+  order: PrintOrderRecord;
+  orderViewUrl: string;
+}> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload-session', true);
+    xhr.setRequestHeader('Content-Type', 'application/json');
+    xhr.timeout = 45000;
+
+    xhr.upload.onprogress = (evt) => {
+      if (!onProgress) return;
+      if (evt.lengthComputable && evt.total > 0) {
+        const pct = Math.min(95, Math.max(1, Math.round((evt.loaded / evt.total) * 95)));
+        onProgress(pct);
+      }
+    };
+
+    xhr.onload = () => {
+      const contentType = xhr.getResponseHeader('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        reject(
+          new Error(
+            `Backend upload endpoint is unavailable on this host (HTTP ${xhr.status}). Enable Firebase Storage in Firebase Console for bucket "${firebaseConfig.storageBucket}".`,
+          ),
+        );
+        return;
+      }
+      try {
+        const parsed = JSON.parse(xhr.responseText) as {
+          order?: PrintOrderRecord;
+          orderViewUrl?: string;
+          error?: string;
+        };
+        if (xhr.status < 200 || xhr.status >= 300 || !parsed.order) {
+          reject(new Error(parsed.error || `Document upload failed (HTTP ${xhr.status}).`));
+          return;
+        }
+        if (onProgress) onProgress(100);
+        resolve({
+          order: parsed.order,
+          orderViewUrl: parsed.orderViewUrl || '',
+        });
+      } catch {
+        reject(new Error('Invalid JSON response returned from upload service.'));
+      }
+    };
+
+    xhr.onerror = () => reject(new Error('Network error while uploading document to server.'));
+    xhr.ontimeout = () => reject(new Error('Document upload timed out. Please try again.'));
+    xhr.send(JSON.stringify(payload));
+  });
 }
 
 export async function uploadOrderAssetsToFirebaseStorage(

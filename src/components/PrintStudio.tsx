@@ -11,6 +11,7 @@ import {
   MessageSquare,
   Minus,
   Plus,
+  RotateCcw,
   Send,
   Trash2,
   UploadCloud,
@@ -23,6 +24,7 @@ import {
   fetchStudioSettings,
   saveOrderToFirestore,
   uploadFilesToFirebaseStorageWithProgress,
+  uploadSessionViaBackendWithProgress,
 } from '../firebase';
 import {
   calculateDynamicOrderPrice,
@@ -182,12 +184,9 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
   const [clientRequestId, setClientRequestId] = useState<string>(() => newRequestId());
   const [submitting, setSubmitting] = useState(false);
   const [startingWhatsapp, setStartingWhatsapp] = useState(false);
+  const [uploadState, setUploadState] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle');
+  const [lastAttemptMode, setLastAttemptMode] = useState<'whatsapp_session' | 'web_checkout'>('web_checkout');
   const [submitError, setSubmitError] = useState<string | null>(null);
-  const [whatsappSessionReady, setWhatsappSessionReady] = useState<{
-    order: PrintOrderRecord;
-    whatsappContinueUrl: string;
-    orderViewSearch: string;
-  } | null>(null);
   const [confirmation, setConfirmation] = useState<{
     order: PrintOrderRecord;
     orderViewSearch: string;
@@ -295,7 +294,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
     setFileError(null);
     setSubmitError(null);
     setConfirmation(null);
-    setWhatsappSessionReady(null);
+    setUploadState('idle');
     setUploadProgress(0);
 
     const incoming = Array.from(fileList);
@@ -413,7 +412,6 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
       return next;
     });
     if (activePreviewId === localId) setActivePreviewId(null);
-    setWhatsappSessionReady(null);
     setClientRequestId(newRequestId());
   };
 
@@ -429,7 +427,6 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
       }));
       return next;
     });
-    setWhatsappSessionReady(null);
   };
 
   const handlePrintTypeChange = (nextType: PrintType) => {
@@ -482,7 +479,20 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
         ? 'Print Shop Pickup'
         : delivery.location;
 
-  const openWhatsappExternal = (url: string) => {
+  const redirectToWhatsappUrl = (url: string): boolean => {
+    if (typeof window === 'undefined') return false;
+    if (window.self === window.top) {
+      window.location.assign(url);
+      return true;
+    }
+    try {
+      if (window.top) {
+        window.top.location.assign(url);
+        return true;
+      }
+    } catch {
+      // Cross-origin iframe preview sandbox: open WhatsApp in a new tab
+    }
     const anchor = document.createElement('a');
     anchor.href = url;
     anchor.target = '_blank';
@@ -490,6 +500,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
     document.body.appendChild(anchor);
     anchor.click();
     document.body.removeChild(anchor);
+    return false;
   };
 
   const buildSelectedServiceNames = (): string[] =>
@@ -497,57 +508,95 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
       .map((id) => servicesCatalog.find((s) => s.id === id)?.name || id)
       .filter(Boolean);
 
-  // Upload-first "CONTINUE ON WHATSAPP" handler:
-  // Uploads file(s) to Firebase Storage -> gets download URL -> saves order to Firestore -> opens https://wa.me/23279576978
-  const handleContinueOnWhatsapp = async () => {
-    if (startingWhatsapp || submitting) return;
-    setFileError(null);
-    setSubmitError(null);
+  const uploadAndRedirectToWhatsapp = async (
+    submissionMode: 'whatsapp_session' | 'web_checkout',
+    paymentMethodOverride?: PaymentMethod,
+  ): Promise<void> => {
+    const orderId = generateOrderReference();
+    const effectiveLocation = buildEffectiveLocation();
+    const finishingLabel =
+      FINISHING_OPTIONS.find((f) => f.id === printing.finishing)?.label || printing.finishing;
 
-    if (uploadedFiles.length === 0) {
-      setFileError('Please upload at least one PDF, DOC, or DOCX document first.');
-      return;
-    }
+    const sessionCustomer: CustomerDetails = {
+      fullName: customer.fullName.trim() || 'Pending via WhatsApp',
+      studentId: customer.studentId.trim() || 'Pending',
+      institution: effectiveInstitution || 'Pending via WhatsApp',
+      department: customer.department.trim() || 'Pending via WhatsApp',
+      course: customer.course.trim() || 'Pending via WhatsApp',
+      lecturerName: customer.lecturerName.trim() || 'Pending via WhatsApp',
+      assignmentTitle:
+        customer.assignmentTitle.trim() ||
+        uploadedFiles[0]?.file.name ||
+        'Uploaded Document',
+      whatsappPhone: customer.whatsappPhone.trim() || 'WhatsApp',
+      ...(customer.altPhone?.trim() ? { altPhone: customer.altPhone.trim() } : {}),
+    };
 
-    if (whatsappSessionReady) {
-      openWhatsappExternal(whatsappSessionReady.whatsappContinueUrl);
-      return;
-    }
+    const envelopeHtml = buildEnvelopeLabelHtml({
+      orderId,
+      customer: sessionCustomer,
+      copies: printing.copies,
+      finishingLabel,
+      envelopeQuantity: printing.envelopeQuantity,
+      note: envelopeNote.trim(),
+    });
 
-    setStartingWhatsapp(true);
-    setUploadProgress(5);
+    setUploadState('uploading');
+    setUploadProgress(0);
+
+    let documents: UploadedDocumentItem[] = [];
+    let labelStoragePath = `orders/${orderId}/envelope-label.html`;
+    let labelDownloadUrl = '';
+    let usedBackendUpload = false;
+
+    const sessionPayload: UploadSessionPayload = {
+      clientRequestId,
+      preferredOrderId: orderId,
+      files: uploadedFiles.map((f) => ({
+        fileBase64: f.base64,
+        filename: f.file.name,
+        mimeType: f.mimeType,
+        sizeBytes: f.file.size,
+        pages: f.pages,
+      })),
+      customer: {
+        fullName: customer.fullName.trim() || undefined,
+        studentId: customer.studentId.trim() || undefined,
+        institution: effectiveInstitution || undefined,
+        department: customer.department.trim() || undefined,
+        course: customer.course.trim() || undefined,
+        lecturerName: customer.lecturerName.trim() || undefined,
+        assignmentTitle: customer.assignmentTitle.trim() || undefined,
+        whatsappPhone: customer.whatsappPhone.trim() || undefined,
+        altPhone: customer.altPhone?.trim() || undefined,
+      },
+      printing: {
+        ...printing,
+        bwPages:
+          printing.printType === 'bw'
+            ? effectivePageCount
+            : printing.printType === 'color'
+              ? 0
+              : Math.min(effectivePageCount, printing.bwPages),
+        colorPages:
+          printing.printType === 'bw'
+            ? 0
+            : Math.max(
+                0,
+                effectivePageCount -
+                  (printing.printType === 'color' ? 0 : Math.min(effectivePageCount, printing.bwPages)),
+              ),
+      },
+      selectedServices: selectedServiceIds,
+      delivery: {
+        ...delivery,
+        location: effectiveLocation,
+      },
+      envelopeNote: envelopeNote.trim(),
+    };
 
     try {
-      const orderId = generateOrderReference();
-      const effectiveLocation = buildEffectiveLocation();
-      const finishingLabel =
-        FINISHING_OPTIONS.find((f) => f.id === printing.finishing)?.label || printing.finishing;
-
-      const sessionCustomer: CustomerDetails = {
-        fullName: customer.fullName.trim() || 'Pending via WhatsApp',
-        studentId: customer.studentId.trim() || 'Pending',
-        institution: effectiveInstitution || 'Pending via WhatsApp',
-        department: customer.department.trim() || 'Pending via WhatsApp',
-        course: customer.course.trim() || 'Pending via WhatsApp',
-        lecturerName: customer.lecturerName.trim() || 'Pending via WhatsApp',
-        assignmentTitle:
-          customer.assignmentTitle.trim() ||
-          uploadedFiles[0]?.file.name ||
-          'Uploaded Document',
-        whatsappPhone: customer.whatsappPhone.trim() || 'WhatsApp',
-        ...(customer.altPhone?.trim() ? { altPhone: customer.altPhone.trim() } : {}),
-      };
-
-      const envelopeHtml = buildEnvelopeLabelHtml({
-        orderId,
-        customer: sessionCustomer,
-        copies: printing.copies,
-        finishingLabel,
-        envelopeQuantity: printing.envelopeQuantity,
-        note: envelopeNote.trim(),
-      });
-
-      // 1. Upload documents + label directly to Firebase Storage and retrieve download URLs
+      // 1. Upload documents + label directly to Firebase Storage and wait for completion before requesting download URLs
       const storageRes = await uploadFilesToFirebaseStorageWithProgress(
         orderId,
         uploadedFiles.map((f) => f.file),
@@ -556,10 +605,10 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
       );
 
       if (storageRes.uploaded.length !== uploadedFiles.length) {
-        throw new Error('Document upload to Firebase Storage was incomplete. Please try again.');
+        throw new Error('Document upload to Firebase Storage was incomplete. Please retry.');
       }
 
-      const documents: UploadedDocumentItem[] = uploadedFiles.map((f, idx) => ({
+      documents = uploadedFiles.map((f, idx) => ({
         fileId: `file_${idx + 1}`,
         filename: f.file.name,
         mimeType: f.mimeType,
@@ -569,161 +618,228 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
         storagePath: storageRes.uploaded[idx].storagePath,
         secureDownloadUrl: storageRes.uploaded[idx].downloadUrl,
       }));
+      labelStoragePath = storageRes.labelStoragePath || labelStoragePath;
+      labelDownloadUrl = storageRes.labelDownloadUrl || '';
+    } catch (storageErr) {
+      const errMsg = storageErr instanceof Error ? storageErr.message : String(storageErr);
+      const isBucketMissingOrStalled =
+        errMsg.includes('404') ||
+        errMsg.includes('not provisioned') ||
+        errMsg.includes('stalled at 0%') ||
+        errMsg.includes('bucket-not-found') ||
+        errMsg.includes('storage/unknown') ||
+        errMsg.includes('storage/canceled') ||
+        errMsg.includes('retry-limit-exceeded');
 
-      const totalPages = documents.reduce((s, d) => s + d.pages, 0);
-      const totalBytes = documents.reduce((s, d) => s + d.sizeBytes, 0);
-      const firstDoc = documents[0];
-      const summaryFilename =
-        documents.length > 1
-          ? `${firstDoc.filename} (+${documents.length - 1} more)`
-          : firstDoc.filename;
-      const nowIso = new Date().toISOString();
+      if (!isBucketMissingOrStalled) {
+        setUploadState('error');
+        throw storageErr;
+      }
 
-      let orderRecord: PrintOrderRecord = {
-        orderId,
-        clientRequestId,
-        submissionMode: 'whatsapp_session',
-        status: 'ORDER RECEIVED',
-        customer: sessionCustomer,
-        document: {
-          filename: summaryFilename.slice(0, 180),
-          pages: totalPages,
-          sizeBytes: totalBytes,
-          storagePath: firstDoc.storagePath,
-          secureDownloadUrl: firstDoc.secureDownloadUrl,
-        },
-        documents,
-        selectedServices: selectedServiceIds,
-        printing: {
-          ...printing,
-          bwPages:
-            printing.printType === 'bw'
-              ? totalPages
-              : printing.printType === 'color'
-                ? 0
-                : Math.min(totalPages, printing.bwPages),
-          colorPages:
-            printing.printType === 'bw'
-              ? 0
-              : Math.max(
-                  0,
-                  totalPages -
-                    (printing.printType === 'color' ? 0 : Math.min(totalPages, printing.bwPages)),
-                ),
-        },
-        pricing: livePricing,
-        payment: {
-          method: selectedPayment || 'payment_on_delivery',
-          status: 'PENDING',
-          reference: paymentReference.trim(),
-        },
-        delivery: {
-          ...delivery,
-          location: effectiveLocation,
-        },
-        envelopeLabel: {
-          storagePath: storageRes.labelStoragePath || `orders/${orderId}/envelope-label.html`,
-          secureLabelUrl: storageRes.labelDownloadUrl || '',
-          note: envelopeNote.trim(),
-        },
-        whatsappNotification: { status: 'PENDING', lastError: '', attempts: 0 },
-        emailNotification: { status: 'PENDING', lastError: '', attempts: 0 },
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
-
-      // 2. Persist order record to Firestore
-      let firestoreSaved = true;
+      // Fallback to active server upload endpoint with real XHR progress tracking when Storage bucket is unavailable
       try {
-        await saveOrderToFirestore(orderRecord);
-      } catch (fsErr) {
-        console.warn('Firestore save warning:', fsErr);
-        firestoreSaved = false;
+        const backendUpload = await uploadSessionViaBackendWithProgress(sessionPayload, (pct) =>
+          setUploadProgress(pct),
+        );
+        usedBackendUpload = true;
+        documents = backendUpload.order.documents || [
+          {
+            fileId: 'file_1',
+            filename: backendUpload.order.document.filename,
+            mimeType: uploadedFiles[0]?.mimeType || 'application/pdf',
+            extension: uploadedFiles[0]?.extension || 'pdf',
+            pages: backendUpload.order.document.pages,
+            sizeBytes: backendUpload.order.document.sizeBytes,
+            storagePath: backendUpload.order.document.storagePath,
+            secureDownloadUrl: backendUpload.order.document.secureDownloadUrl,
+          },
+        ];
+        labelStoragePath = backendUpload.order.envelopeLabel?.storagePath || labelStoragePath;
+        labelDownloadUrl = backendUpload.order.envelopeLabel?.secureLabelUrl || '';
+      } catch (backendErr) {
+        setUploadState('error');
+        const backendMsg = backendErr instanceof Error ? backendErr.message : String(backendErr);
+        throw new Error(`${errMsg} (Server fallback check: ${backendMsg})`);
       }
+    }
 
-      // 3. Best-effort sync to Express backend (if active) so Email & Bot Bridge receive the session & Firebase URL
-      const backendPayload: UploadSessionPayload = {
-        clientRequestId,
-        preferredOrderId: orderId,
-        files: uploadedFiles.map((f, idx) => ({
-          fileBase64: f.base64,
-          filename: f.file.name,
-          mimeType: f.mimeType,
-          sizeBytes: f.file.size,
-          pages: f.pages,
-          storagePath: documents[idx].storagePath,
-          firebaseDownloadUrl: documents[idx].secureDownloadUrl,
-        })),
-        customer: {
-          fullName: customer.fullName.trim() || undefined,
-          studentId: customer.studentId.trim() || undefined,
-          institution: effectiveInstitution || undefined,
-          department: customer.department.trim() || undefined,
-          course: customer.course.trim() || undefined,
-          lecturerName: customer.lecturerName.trim() || undefined,
-          assignmentTitle: customer.assignmentTitle.trim() || undefined,
-          whatsappPhone: customer.whatsappPhone.trim() || undefined,
-          altPhone: customer.altPhone?.trim() || undefined,
-        },
-        printing: orderRecord.printing,
-        selectedServices: selectedServiceIds,
-        delivery: orderRecord.delivery,
-        envelopeNote: envelopeNote.trim(),
-        labelDownloadUrl: storageRes.labelDownloadUrl || undefined,
-      };
+    if (documents.some((d) => !d.secureDownloadUrl || !/^https?:\/\//i.test(d.secureDownloadUrl))) {
+      setUploadState('error');
+      throw new Error('Could not retrieve a valid document download URL after upload.');
+    }
 
-      const backendRes = await trySyncBackendJson<{
-        order: PrintOrderRecord;
-        orderViewUrl: string;
-      }>('/api/upload-session', backendPayload);
+    setUploadProgress(100);
+    setUploadState('success');
 
-      let orderViewSearch = '';
-      if (backendRes?.order) {
-        orderRecord = {
-          ...orderRecord,
-          emailNotification: backendRes.order.emailNotification || orderRecord.emailNotification,
+    const totalPages = documents.reduce((s, d) => s + d.pages, 0);
+    const totalBytes = documents.reduce((s, d) => s + d.sizeBytes, 0);
+    const firstDoc = documents[0];
+    const summaryFilename =
+      documents.length > 1
+        ? `${firstDoc.filename} (+${documents.length - 1} more)`
+        : firstDoc.filename;
+    const nowIso = new Date().toISOString();
+    const resolvedPaymentMethod = paymentMethodOverride || selectedPayment || 'payment_on_delivery';
+
+    const orderRecord: PrintOrderRecord = {
+      orderId,
+      clientRequestId,
+      submissionMode,
+      status: 'ORDER RECEIVED',
+      customer: sessionCustomer,
+      document: {
+        filename: summaryFilename.slice(0, 180),
+        pages: totalPages,
+        sizeBytes: totalBytes,
+        storagePath: firstDoc.storagePath,
+        secureDownloadUrl: firstDoc.secureDownloadUrl,
+      },
+      documents,
+      selectedServices: selectedServiceIds,
+      printing: {
+        ...printing,
+        bwPages:
+          printing.printType === 'bw'
+            ? totalPages
+            : printing.printType === 'color'
+              ? 0
+              : Math.min(totalPages, printing.bwPages),
+        colorPages:
+          printing.printType === 'bw'
+            ? 0
+            : Math.max(
+                0,
+                totalPages -
+                  (printing.printType === 'color' ? 0 : Math.min(totalPages, printing.bwPages)),
+              ),
+      },
+      pricing: livePricing,
+      payment: {
+        method: resolvedPaymentMethod,
+        status: 'PENDING',
+        reference: paymentReference.trim(),
+      },
+      delivery: {
+        ...delivery,
+        location: effectiveLocation,
+      },
+      envelopeLabel: {
+        storagePath: labelStoragePath,
+        secureLabelUrl: labelDownloadUrl,
+        note: envelopeNote.trim(),
+      },
+      whatsappNotification: { status: 'PENDING', lastError: '', attempts: 0 },
+      emailNotification: { status: 'PENDING', lastError: '', attempts: 0 },
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    };
+
+    // 2. Persist order session to Firestore
+    let firestoreSaved = true;
+    try {
+      await saveOrderToFirestore(orderRecord);
+    } catch (fsErr) {
+      console.warn('Firestore order save warning:', fsErr);
+      firestoreSaved = false;
+    }
+
+    cacheOrderForSession(orderRecord);
+
+    // 3. Fire-and-forget sync to backend when Firebase Storage handled upload
+    if (!usedBackendUpload) {
+      if (submissionMode === 'web_checkout' && customer.fullName.trim() && customer.whatsappPhone.trim()) {
+        const orderPayload: SubmitOrderPayload = {
+          clientRequestId,
+          preferredOrderId: orderId,
+          files: uploadedFiles.map((f, idx) => ({
+            fileBase64: f.base64,
+            filename: f.file.name,
+            mimeType: f.mimeType,
+            sizeBytes: f.file.size,
+            pages: f.pages,
+            storagePath: documents[idx].storagePath,
+            firebaseDownloadUrl: documents[idx].secureDownloadUrl,
+          })),
+          customer: sessionCustomer,
+          printing: orderRecord.printing,
+          selectedServices: selectedServiceIds,
+          payment: {
+            method: resolvedPaymentMethod,
+            reference: paymentReference.trim(),
+          },
+          delivery: orderRecord.delivery,
+          envelopeNote: envelopeNote.trim(),
+          currency: activeCurrency,
+          storagePath: firstDoc.storagePath,
+          labelStoragePath,
+          labelDownloadUrl,
         };
-        try {
-          orderViewSearch = new URL(backendRes.orderViewUrl).search;
-        } catch {
-          orderViewSearch = '';
-        }
+        void trySyncBackendJson('/api/orders', orderPayload);
+      } else {
+        const syncPayload: UploadSessionPayload = {
+          ...sessionPayload,
+          files: uploadedFiles.map((f, idx) => ({
+            fileBase64: f.base64,
+            filename: f.file.name,
+            mimeType: f.mimeType,
+            sizeBytes: f.file.size,
+            pages: f.pages,
+            storagePath: documents[idx].storagePath,
+            firebaseDownloadUrl: documents[idx].secureDownloadUrl,
+          })),
+          labelDownloadUrl: labelDownloadUrl || undefined,
+        };
+        void trySyncBackendJson('/api/upload-session', syncPayload);
       }
+    }
 
-      cacheOrderForSession(orderRecord);
+    // 4. Directly build WhatsApp URL with Order Reference + Document Download URL and redirect immediately
+    const whatsappUrl = buildWhatsappOrderUrl({
+      orderId,
+      documents,
+      customer: customerForPreview,
+      printing: orderRecord.printing,
+      pricing: orderRecord.pricing,
+      delivery: orderRecord.delivery,
+      payment: selectedPayment ? orderRecord.payment : undefined,
+      selectedServiceNames: buildSelectedServiceNames(),
+      envelopeNote: envelopeNote.trim(),
+    });
 
-      // 4. Construct direct https://wa.me/23279576978 URL with Order Reference, Firebase Document URL(s), and available student info
-      const whatsappContinueUrl = buildWhatsappOrderUrl({
-        orderId,
-        documents,
-        customer: customerForPreview,
-        printing: orderRecord.printing,
-        pricing: orderRecord.pricing,
-        delivery: orderRecord.delivery,
-        payment: selectedPayment ? orderRecord.payment : undefined,
-        selectedServiceNames: buildSelectedServiceNames(),
-        envelopeNote: envelopeNote.trim(),
-      });
-
-      setWhatsappSessionReady({
-        order: orderRecord,
-        whatsappContinueUrl,
-        orderViewSearch,
-      });
-
+    const redirectedDirectly = redirectToWhatsappUrl(whatsappUrl);
+    if (!redirectedDirectly) {
       setConfirmation({
         order: orderRecord,
-        orderViewSearch,
-        whatsappContinueUrl,
+        orderViewSearch: '',
+        whatsappContinueUrl: whatsappUrl,
         firestoreSaved,
       });
+    }
+  };
 
-      openWhatsappExternal(whatsappContinueUrl);
+  // Immediate upload-first "CONTINUE ON WHATSAPP" handler
+  const handleContinueOnWhatsapp = async () => {
+    if (startingWhatsapp || submitting) return;
+    setFileError(null);
+    setSubmitError(null);
+    setLastAttemptMode('whatsapp_session');
+
+    if (uploadedFiles.length === 0) {
+      setUploadState('error');
+      setFileError('Please upload at least one PDF, DOC, or DOCX document first.');
+      return;
+    }
+
+    setStartingWhatsapp(true);
+
+    try {
+      await uploadAndRedirectToWhatsapp('whatsapp_session');
     } catch (err) {
       const msg =
         err instanceof Error
           ? err.message
-          : 'Unable to upload document and start WhatsApp session. Please try again.';
+          : 'Unable to upload document and redirect to WhatsApp. Please try again.';
+      setUploadState('error');
       setFileError(msg);
       setSubmitError(msg);
       setUploadProgress(0);
@@ -732,256 +848,46 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
     }
   };
 
-  // Full Order Now submit handler with explicit validation for uploaded files & missing student details
-  const handleSubmitOrder = async (e: React.FormEvent) => {
-    e.preventDefault();
+  // Direct "Order Now" submit handler: uploads document, saves session, builds WhatsApp URL, and redirects immediately
+  const handleSubmitOrder = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (submitting || startingWhatsapp) return;
     setSubmitError(null);
     setFileError(null);
+    setLastAttemptMode('web_checkout');
 
     if (uploadedFiles.length === 0) {
-      const msg = 'Please upload at least one PDF, DOC, or DOCX document before placing your order.';
+      const msg = 'Please upload at least one PDF, DOC, or DOCX document before clicking Order Now.';
+      setUploadState('error');
       setFileError(msg);
       setSubmitError(msg);
       return;
     }
 
-    const trimmedCustomer: CustomerDetails = {
-      fullName: customer.fullName.trim(),
-      studentId: customer.studentId.trim(),
-      institution: effectiveInstitution,
-      department: customer.department.trim(),
-      course: customer.course.trim(),
-      lecturerName: customer.lecturerName.trim(),
-      assignmentTitle: customer.assignmentTitle.trim(),
-      whatsappPhone: customer.whatsappPhone.trim(),
-      altPhone: customer.altPhone?.trim() || '',
-    };
-
-    const missingFields: string[] = [];
-    if (!trimmedCustomer.fullName) missingFields.push('Full Name');
-    if (!trimmedCustomer.studentId) missingFields.push('Student ID');
-    if (!trimmedCustomer.institution) missingFields.push('School or University');
-    if (!trimmedCustomer.department) missingFields.push('Department / Faculty');
-    if (!trimmedCustomer.course) missingFields.push('Course or Subject');
-    if (!trimmedCustomer.lecturerName) missingFields.push("Lecturer's Name");
-    if (!trimmedCustomer.assignmentTitle) missingFields.push('Assignment Title');
-    if (!trimmedCustomer.whatsappPhone) missingFields.push('Phone / WhatsApp Number');
-    if (
-      delivery.method === 'campus_delivery' &&
-      delivery.location === 'Hostel / Off-Campus Address' &&
-      !customOffCampusAddress.trim()
-    ) {
-      missingFields.push('Hostel / Street Address');
-    }
-
-    if (missingFields.length > 0) {
-      setSubmitError(
-        `Missing required student information: ${missingFields.join(', ')}. Complete these fields or click "CONTINUE ON WHATSAPP" under Document Upload to send your file now and finish details in chat.`,
-      );
-      return;
-    }
-
-    if (!selectedPayment) {
-      setSubmitError(
-        'Please select a payment option (Orange Money, Africell Money, or Payment on Delivery) before submitting your order.',
-      );
-      return;
-    }
-
     setSubmitting(true);
-    setUploadProgress(5);
 
     try {
-      const orderId = generateOrderReference();
-      const effectiveLocation = buildEffectiveLocation();
-      const finishingLabel =
-        FINISHING_OPTIONS.find((f) => f.id === printing.finishing)?.label || printing.finishing;
-
-      const envelopeHtml = buildEnvelopeLabelHtml({
-        orderId,
-        customer: trimmedCustomer,
-        copies: printing.copies,
-        finishingLabel,
-        envelopeQuantity: printing.envelopeQuantity,
-        note: envelopeNote.trim(),
-      });
-
-      // 1. Upload documents + label to Firebase Storage first and get real download URLs
-      const storageRes = await uploadFilesToFirebaseStorageWithProgress(
-        orderId,
-        uploadedFiles.map((f) => f.file),
-        envelopeHtml,
-        (pct) => setUploadProgress(pct),
-      );
-
-      if (storageRes.uploaded.length !== uploadedFiles.length) {
-        throw new Error('Document upload to Firebase Storage failed. Please try again.');
-      }
-
-      const documents: UploadedDocumentItem[] = uploadedFiles.map((f, idx) => ({
-        fileId: `file_${idx + 1}`,
-        filename: f.file.name,
-        mimeType: f.mimeType,
-        extension: f.extension,
-        pages: Math.max(1, f.pages),
-        sizeBytes: f.file.size,
-        storagePath: storageRes.uploaded[idx].storagePath,
-        secureDownloadUrl: storageRes.uploaded[idx].downloadUrl,
-      }));
-
-      const totalPages = documents.reduce((s, d) => s + d.pages, 0);
-      const totalBytes = documents.reduce((s, d) => s + d.sizeBytes, 0);
-      const firstDoc = documents[0];
-      const summaryFilename =
-        documents.length > 1
-          ? `${firstDoc.filename} (+${documents.length - 1} more)`
-          : firstDoc.filename;
-      const nowIso = new Date().toISOString();
-
-      let orderRecord: PrintOrderRecord = {
-        orderId,
-        clientRequestId,
-        submissionMode: 'web_checkout',
-        status: 'ORDER RECEIVED',
-        customer: trimmedCustomer,
-        document: {
-          filename: summaryFilename.slice(0, 180),
-          pages: totalPages,
-          sizeBytes: totalBytes,
-          storagePath: firstDoc.storagePath,
-          secureDownloadUrl: firstDoc.secureDownloadUrl,
-        },
-        documents,
-        selectedServices: selectedServiceIds,
-        printing: {
-          ...printing,
-          bwPages:
-            printing.printType === 'bw'
-              ? totalPages
-              : printing.printType === 'color'
-                ? 0
-                : Math.min(totalPages, printing.bwPages),
-          colorPages:
-            printing.printType === 'bw'
-              ? 0
-              : Math.max(
-                  0,
-                  totalPages -
-                    (printing.printType === 'color' ? 0 : Math.min(totalPages, printing.bwPages)),
-                ),
-        },
-        pricing: livePricing,
-        payment: {
-          method: selectedPayment,
-          status: 'PENDING',
-          reference: paymentReference.trim(),
-        },
-        delivery: {
-          ...delivery,
-          location: effectiveLocation,
-        },
-        envelopeLabel: {
-          storagePath: storageRes.labelStoragePath || `orders/${orderId}/envelope-label.html`,
-          secureLabelUrl: storageRes.labelDownloadUrl || '',
-          note: envelopeNote.trim(),
-        },
-        whatsappNotification: { status: 'PENDING', lastError: '', attempts: 0 },
-        emailNotification: { status: 'PENDING', lastError: '', attempts: 0 },
-        createdAt: nowIso,
-        updatedAt: nowIso,
-      };
-
-      // 2. Persist order record to Firestore
-      let firestoreSaved = true;
-      try {
-        await saveOrderToFirestore(orderRecord);
-      } catch (fsErr) {
-        console.warn('Firestore order save issue:', fsErr);
-        firestoreSaved = false;
-      }
-
-      // 3. Best-effort sync to Express backend (when active) for email to badax1010@gmail.com & WhatsApp Cloud API
-      const backendPayload: SubmitOrderPayload = {
-        clientRequestId,
-        preferredOrderId: orderId,
-        files: uploadedFiles.map((f, idx) => ({
-          fileBase64: f.base64,
-          filename: f.file.name,
-          mimeType: f.mimeType,
-          sizeBytes: f.file.size,
-          pages: f.pages,
-          storagePath: documents[idx].storagePath,
-          firebaseDownloadUrl: documents[idx].secureDownloadUrl,
-        })),
-        customer: trimmedCustomer,
-        printing: orderRecord.printing,
-        selectedServices: selectedServiceIds,
-        payment: {
-          method: selectedPayment,
-          reference: paymentReference.trim(),
-        },
-        delivery: orderRecord.delivery,
-        envelopeNote: envelopeNote.trim(),
-        currency: activeCurrency,
-        storagePath: firstDoc.storagePath,
-        labelStoragePath: storageRes.labelStoragePath,
-        labelDownloadUrl: storageRes.labelDownloadUrl,
-      };
-
-      const backendRes = await trySyncBackendJson<{
-        order: PrintOrderRecord;
-        orderViewUrl: string;
-      }>('/api/orders', backendPayload);
-
-      let orderViewSearch = '';
-      if (backendRes?.order) {
-        orderRecord = {
-          ...orderRecord,
-          whatsappNotification:
-            backendRes.order.whatsappNotification || orderRecord.whatsappNotification,
-          emailNotification:
-            backendRes.order.emailNotification || orderRecord.emailNotification,
-        };
-        try {
-          orderViewSearch = new URL(backendRes.orderViewUrl).search;
-        } catch {
-          orderViewSearch = '';
-        }
-      }
-
-      cacheOrderForSession(orderRecord);
-
-      // 4. Construct direct https://wa.me/23279576978 URL with Order ID, Firebase Storage URLs & full student info
-      const whatsappContinueUrl = buildWhatsappOrderUrl({
-        orderId,
-        documents,
-        customer: trimmedCustomer,
-        printing: orderRecord.printing,
-        pricing: orderRecord.pricing,
-        delivery: orderRecord.delivery,
-        payment: orderRecord.payment,
-        selectedServiceNames: buildSelectedServiceNames(),
-        envelopeNote: envelopeNote.trim(),
-      });
-
-      setConfirmation({
-        order: orderRecord,
-        orderViewSearch,
-        whatsappContinueUrl,
-        firestoreSaved,
-      });
-
-      openWhatsappExternal(whatsappContinueUrl);
+      await uploadAndRedirectToWhatsapp('web_checkout', selectedPayment || 'payment_on_delivery');
     } catch (err) {
-      setSubmitError(
+      const msg =
         err instanceof Error
           ? err.message
-          : 'Failed to upload documents or submit order. Please try again.',
-      );
+          : 'Failed to upload documents or create order session. Please try again.';
+      setUploadState('error');
+      setFileError(msg);
+      setSubmitError(msg);
       setUploadProgress(0);
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleRetryUpload = () => {
+    setClientRequestId(newRequestId());
+    if (lastAttemptMode === 'whatsapp_session') {
+      void handleContinueOnWhatsapp();
+    } else {
+      void handleSubmitOrder();
     }
   };
 
@@ -994,7 +900,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
     setSelectedPayment(null);
     setPaymentReference('');
     setConfirmation(null);
-    setWhatsappSessionReady(null);
+    setUploadState('idle');
     setUploadProgress(0);
     setSubmitError(null);
     setFileError(null);
@@ -1045,7 +951,7 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
             <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3.5 text-sm text-emerald-950 flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="font-semibold">
-                  Documents uploaded to Firebase Storage &amp; ready on WhatsApp
+                  Documents uploaded &amp; ready on WhatsApp
                 </p>
                 <p className="text-xs text-emerald-800 mt-0.5">
                   Your order reference <span className="font-mono font-semibold">{order.orderId}</span> and uploaded file link are pre-filled—tap below if WhatsApp did not open automatically.
@@ -1312,21 +1218,33 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
               </div>
             )}
 
-            {/* Upload Progress Bar */}
-            {(startingWhatsapp || submitting || uploadProgress > 0) && (
-              <div className="mt-4 rounded-lg border border-[#E5E3DE] bg-white p-3.5">
+            {/* Upload Progress Bar & Explicit Failure State */}
+            {(uploadState !== 'idle' || startingWhatsapp || submitting) && (
+              <div
+                className={`mt-4 rounded-lg border p-3.5 ${
+                  uploadState === 'error'
+                    ? 'border-[#C8232C]/40 bg-[#C8232C]/5'
+                    : 'border-[#E5E3DE] bg-white'
+                }`}
+              >
                 <div className="flex items-center justify-between text-xs font-mono text-[#141413] mb-1.5">
-                  <span>
-                    {uploadProgress >= 100
-                      ? 'Upload Confirmed & Saved'
-                      : 'Uploading documents securely...'}
+                  <span className={uploadState === 'error' ? 'text-[#C8232C] font-semibold' : ''}>
+                    {uploadState === 'error'
+                      ? 'Document upload failed'
+                      : uploadProgress >= 100 || uploadState === 'success'
+                        ? 'Upload Confirmed & Saved'
+                        : 'Uploading documents securely...'}
                   </span>
                   <span className="tabular-nums font-semibold">{uploadProgress}%</span>
                 </div>
                 <div className="w-full h-2 rounded-full bg-[#EFECE6] overflow-hidden">
                   <div
                     className={`h-full transition-all duration-200 ${
-                      uploadProgress >= 100 ? 'bg-emerald-600' : 'bg-[#C8232C]'
+                      uploadState === 'error'
+                        ? 'bg-[#C8232C]'
+                        : uploadProgress >= 100 || uploadState === 'success'
+                          ? 'bg-emerald-600'
+                          : 'bg-[#C8232C]'
                     }`}
                     style={{ width: `${uploadProgress}%` }}
                   />
@@ -1337,74 +1255,57 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
             {/* Immediate Upload-First "CONTINUE ON WHATSAPP" Card */}
             {uploadedFiles.length > 0 && (
               <div className="mt-5 rounded-xl border border-[#141413]/20 bg-[#FAF9F7] p-5">
-                {whatsappSessionReady ? (
-                  <div className="space-y-3">
-                    <div className="flex items-center gap-2 text-emerald-700 text-xs font-mono font-semibold uppercase">
-                      <CheckCircle2 className="w-4 h-4" />
-                      Upload Successful · Order Reference {whatsappSessionReady.order.orderId}
-                    </div>
-                    <p className="text-sm text-[#141413]">
-                      Your document(s) are saved. Tap below to open WhatsApp with your Order Reference pre-filled—our bot already has your files!
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                  <div>
+                    <p className="font-display text-sm font-semibold text-[#141413]">
+                      Fast Option: Complete Order via DEE PRINTS WhatsApp
                     </p>
-                    <div className="flex flex-wrap items-center gap-3">
-                      <a
-                        href={whatsappSessionReady.whatsappContinueUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center gap-2 px-5 py-3 text-sm font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 transition-colors"
-                      >
+                    <p className="text-xs text-[#57544E] mt-1">
+                      Uploads your document(s), generates your Order Reference, and opens WhatsApp directly without re-uploading.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={startingWhatsapp || submitting || parsingFiles}
+                    onClick={() => void handleContinueOnWhatsapp()}
+                    className="inline-flex items-center justify-center gap-2 px-5 py-3 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
+                  >
+                    {startingWhatsapp ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Uploading &amp; Opening WhatsApp...
+                      </>
+                    ) : (
+                      <>
                         <MessageSquare className="w-4 h-4" />
                         CONTINUE ON WHATSAPP
-                      </a>
-                      {onOpenTrack && (
-                        <button
-                          type="button"
-                          onClick={() => onOpenTrack(whatsappSessionReady.order.orderId)}
-                          className="px-4 py-2.5 text-xs font-semibold text-[#141413] border border-[#D4D0C8] bg-white rounded-lg hover:bg-[#F3F1EC]"
-                        >
-                          Track Order ({whatsappSessionReady.order.orderId})
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ) : (
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                    <div>
-                      <p className="font-display text-sm font-semibold text-[#141413]">
-                        Fast Option: Complete Order via DEE PRINTS WhatsApp Bot
-                      </p>
-                      <p className="text-xs text-[#57544E] mt-1">
-                        Skip filling the full form below—save your uploaded document(s) now and finish details conversationally on WhatsApp.
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      disabled={startingWhatsapp || parsingFiles}
-                      onClick={() => void handleContinueOnWhatsapp()}
-                      className="inline-flex items-center justify-center gap-2 px-5 py-3 text-xs font-semibold text-white bg-emerald-700 rounded-lg hover:bg-emerald-800 disabled:opacity-60 transition-colors whitespace-nowrap shrink-0"
-                    >
-                      {startingWhatsapp ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          Saving Upload...
-                        </>
-                      ) : (
-                        <>
-                          <MessageSquare className="w-4 h-4" />
-                          CONTINUE ON WHATSAPP
-                        </>
-                      )}
-                    </button>
-                  </div>
-                )}
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             )}
 
             {fileError && (
-              <p role="alert" className="mt-3 text-sm text-[#C8232C] font-medium flex items-center gap-1.5">
-                <AlertCircle className="w-4 h-4 shrink-0" />
-                {fileError}
-              </p>
+              <div
+                role="alert"
+                className="mt-3 rounded-lg border border-[#C8232C]/30 bg-[#C8232C]/5 p-3.5 flex flex-wrap items-center justify-between gap-3"
+              >
+                <p className="text-sm text-[#C8232C] font-medium flex items-start gap-2 flex-1 min-w-[200px]">
+                  <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                  <span>{fileError}</span>
+                </p>
+                {uploadedFiles.length > 0 && !startingWhatsapp && !submitting && (
+                  <button
+                    type="button"
+                    onClick={handleRetryUpload}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#C8232C] rounded-md hover:bg-[#AE1D25] transition-colors shrink-0"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    Retry Upload
+                  </button>
+                )}
+              </div>
             )}
           </div>
 
@@ -2123,9 +2024,19 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
             {submitError && (
               <div
                 role="alert"
-                className="rounded-lg border border-[#C8232C]/30 bg-[#C8232C]/5 px-3.5 py-2.5 text-sm text-[#C8232C] font-medium"
+                className="rounded-lg border border-[#C8232C]/30 bg-[#C8232C]/5 px-3.5 py-2.5 text-sm text-[#C8232C] font-medium space-y-2"
               >
-                {submitError}
+                <p>{submitError}</p>
+                {uploadedFiles.length > 0 && !submitting && !startingWhatsapp && (
+                  <button
+                    type="button"
+                    onClick={handleRetryUpload}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#C8232C] rounded-md hover:bg-[#AE1D25] transition-colors"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    Retry Upload
+                  </button>
+                )}
               </div>
             )}
 
@@ -2138,17 +2049,17 @@ export const PrintStudio: React.FC<PrintStudioProps> = ({
                 {submitting || startingWhatsapp ? (
                   <>
                     <Loader2 className="w-4 h-4 animate-spin" />
-                    Saving Order &amp; Opening WhatsApp...
+                    Uploading &amp; Opening WhatsApp...
                   </>
                 ) : (
                   <>
                     <Send className="w-4 h-4" />
-                    ORDER &amp; GO TO WHATSAPP ({livePricing.currency} {livePricing.total.toLocaleString()})
+                    Order Now ({livePricing.currency} {livePricing.total.toLocaleString()})
                   </>
                 )}
               </button>
               <p className="text-[11px] text-center text-[#6B6760]">
-                Saves your uploaded files &amp; opens our WhatsApp line directly with your Order Reference.
+                Uploads your document(s), creates your Order Reference, and opens WhatsApp directly.
               </p>
             </div>
           </div>

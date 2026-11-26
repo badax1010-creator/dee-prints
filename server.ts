@@ -337,14 +337,17 @@ function detectAndValidateDocument(
 }
 
 function getBaseUrl(req: express.Request): string {
-  const configured = process.env.APP_URL?.trim();
+  const forwardedProto = req.get('x-forwarded-proto');
+  const proto = forwardedProto ? forwardedProto.split(',')[0].trim() : req.protocol || 'http';
+  const host = req.get('x-forwarded-host') || req.get('host');
+  if (host) {
+    return `${proto}://${host}`;
+  }
+  const configured = process.env.SHARED_APP_URL?.trim() || process.env.APP_URL?.trim();
   if (configured && configured !== 'MY_APP_URL' && /^https?:\/\//i.test(configured)) {
     return configured.replace(/\/+$/, '');
   }
-  const forwardedProto = req.get('x-forwarded-proto');
-  const proto = forwardedProto ? forwardedProto.split(',')[0].trim() : req.protocol;
-  const host = req.get('x-forwarded-host') || req.get('host') || `localhost:${PORT}`;
-  return `${proto}://${host}`;
+  return `http://localhost:${PORT}`;
 }
 
 function formatPrintTypeLabel(order: PrintOrderRecord): string {

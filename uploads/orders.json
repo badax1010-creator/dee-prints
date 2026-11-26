@@ -1,1 +1,210 @@
-{}
+{
+  "DEE-C6215D": {
+    "orderId": "DEE-C6215D",
+    "clientRequestId": "test_req_1795695994626",
+    "submissionMode": "whatsapp_session",
+    "status": "ORDER RECEIVED",
+    "customer": {
+      "fullName": "Aminata Kamara",
+      "studentId": "Pending",
+      "institution": "Limkokwing University of Creative Technology",
+      "department": "Pending via WhatsApp",
+      "course": "Pending via WhatsApp",
+      "lecturerName": "Pending via WhatsApp",
+      "assignmentTitle": "assignment-test.pdf",
+      "whatsappPhone": "076123456"
+    },
+    "document": {
+      "filename": "assignment-test.pdf (+1 more)",
+      "pages": 7,
+      "sizeBytes": 1128,
+      "storagePath": "orders/DEE-C6215D/assignment-test.pdf",
+      "secureDownloadUrl": "https://ais-dev-wz3iw6y5t3m34iyhr3kt7w-177328608498.europe-west2.run.app/api/secure/document/DEE-C6215D?exp=1795868794665&sig=23fb3cbb604d51eff67529d6d1100cffe546f1d4652fcc01151dc5ad0719c5ac&fileId=file_1_4524"
+    },
+    "documents": [
+      {
+        "fileId": "file_1_4524",
+        "filename": "assignment-test.pdf",
+        "mimeType": "application/pdf",
+        "extension": "pdf",
+        "pages": 2,
+        "sizeBytes": 1101,
+        "storagePath": "orders/DEE-C6215D/assignment-test.pdf",
+        "secureDownloadUrl": "https://ais-dev-wz3iw6y5t3m34iyhr3kt7w-177328608498.europe-west2.run.app/api/secure/document/DEE-C6215D?exp=1795868794665&sig=23fb3cbb604d51eff67529d6d1100cffe546f1d4652fcc01151dc5ad0719c5ac&fileId=file_1_4524"
+      },
+      {
+        "fileId": "file_2_27c2",
+        "filename": "project-report.docx",
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "extension": "docx",
+        "pages": 5,
+        "sizeBytes": 27,
+        "storagePath": "orders/DEE-C6215D/project-report.docx",
+        "secureDownloadUrl": "https://ais-dev-wz3iw6y5t3m34iyhr3kt7w-177328608498.europe-west2.run.app/api/secure/document/DEE-C6215D?exp=1795868794666&sig=d021164514c6f4cd5740919e70e56fdd08f8803e17b6f9c4465a833c98a99e6f&fileId=file_2_27c2"
+      }
+    ],
+    "selectedServices": [
+      "bw_printing",
+      "assignment_printing",
+      "brown_envelope"
+    ],
+    "printing": {
+      "printType": "bw",
+      "bwPages": 7,
+      "colorPages": 0,
+      "sides": "single",
+      "copies": 2,
+      "paperSize": "A4",
+      "finishing": "spiral_binding",
+      "envelopeQuantity": 1,
+      "notes": ""
+    },
+    "pricing": {
+      "currency": "SLE",
+      "bwSheets": 7,
+      "colorSheets": 0,
+      "bwCost": 28,
+      "colorCost": 0,
+      "sidedCost": 0,
+      "printingCost": 28,
+      "envelopeCost": 5,
+      "bindingCost": 0,
+      "packagingCost": 5,
+      "deliveryFee": 0,
+      "additionalServicesCost": 0,
+      "additionalCharges": 0,
+      "total": 33
+    },
+    "payment": {
+      "method": "payment_on_delivery",
+      "status": "PENDING",
+      "reference": ""
+    },
+    "delivery": {
+      "method": "campus_delivery",
+      "location": "Limkokwing Hill Station Campus",
+      "timeWindow": "Next Available (Urgent / Class Today)",
+      "instructions": ""
+    },
+    "envelopeLabel": {
+      "storagePath": "orders/DEE-C6215D/envelope-label.html",
+      "secureLabelUrl": "https://ais-dev-wz3iw6y5t3m34iyhr3kt7w-177328608498.europe-west2.run.app/api/secure/label/DEE-C6215D?exp=1795868794668&sig=721323851d667fff1ddec1b8747566317c401502b1f075e56fac89bf75a85338",
+      "note": ""
+    },
+    "whatsappNotification": {
+      "status": "PENDING",
+      "lastError": "",
+      "attempts": 0
+    },
+    "emailNotification": {
+      "status": "PENDING",
+      "lastError": "",
+      "attempts": 0
+    },
+    "createdAt": "2026-11-26T12:26:34.668Z",
+    "updatedAt": "2026-11-26T12:26:34.668Z"
+  },
+  "DEE-B44144": {
+    "orderId": "DEE-B44144",
+    "clientRequestId": "e2e_test_1795696123567",
+    "submissionMode": "whatsapp_session",
+    "status": "ORDER RECEIVED",
+    "customer": {
+      "fullName": "Aminata Kamara",
+      "studentId": "LKW-2026-0418",
+      "institution": "Limkokwing University of Creative Technology Sierra Leone",
+      "department": "Faculty of Design & Innovation",
+      "course": "DES 302",
+      "lecturerName": "Mr. Sesay",
+      "assignmentTitle": "Editorial Systems",
+      "whatsappPhone": "076123456"
+    },
+    "document": {
+      "filename": "assignment_test.pdf (+1 more)",
+      "pages": 7,
+      "sizeBytes": 606,
+      "storagePath": "orders/DEE-B44144/assignment_test.pdf",
+      "secureDownloadUrl": "http://localhost:3000/api/secure/document/DEE-B44144?exp=1795868923617&sig=bb9a702cbd103d9e3a78bf12643f7f703db60257b4f626d7f74369660390fac6&fileId=file_1_3ccf"
+    },
+    "documents": [
+      {
+        "fileId": "file_1_3ccf",
+        "filename": "assignment_test.pdf",
+        "mimeType": "application/pdf",
+        "extension": "pdf",
+        "pages": 2,
+        "sizeBytes": 592,
+        "storagePath": "orders/DEE-B44144/assignment_test.pdf",
+        "secureDownloadUrl": "http://localhost:3000/api/secure/document/DEE-B44144?exp=1795868923617&sig=bb9a702cbd103d9e3a78bf12643f7f703db60257b4f626d7f74369660390fac6&fileId=file_1_3ccf"
+      },
+      {
+        "fileId": "file_2_d98f",
+        "filename": "essay_test.docx",
+        "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "extension": "docx",
+        "pages": 5,
+        "sizeBytes": 14,
+        "storagePath": "orders/DEE-B44144/essay_test.docx",
+        "secureDownloadUrl": "http://localhost:3000/api/secure/document/DEE-B44144?exp=1795868923618&sig=35205180347ac0f222f79cf6d6f0619dda779cbec9f2c490e30ad7c1aa83ae90&fileId=file_2_d98f"
+      }
+    ],
+    "selectedServices": [
+      "bw_printing"
+    ],
+    "printing": {
+      "printType": "bw",
+      "bwPages": 7,
+      "colorPages": 0,
+      "sides": "single",
+      "copies": 2,
+      "paperSize": "A4",
+      "finishing": "stapling",
+      "envelopeQuantity": 1,
+      "notes": "Test note"
+    },
+    "pricing": {
+      "currency": "SLE",
+      "bwSheets": 7,
+      "colorSheets": 0,
+      "bwCost": 28,
+      "colorCost": 0,
+      "sidedCost": 0,
+      "printingCost": 28,
+      "envelopeCost": 5,
+      "bindingCost": 0,
+      "packagingCost": 5,
+      "deliveryFee": 0,
+      "additionalServicesCost": 0,
+      "additionalCharges": 0,
+      "total": 33
+    },
+    "payment": {
+      "method": "payment_on_delivery",
+      "status": "PENDING",
+      "reference": ""
+    },
+    "delivery": {
+      "method": "campus_delivery",
+      "location": "Limkokwing Campus Gate",
+      "timeWindow": "Next Available (Urgent / Class Today)",
+      "instructions": ""
+    },
+    "envelopeLabel": {
+      "storagePath": "orders/DEE-B44144/envelope-label.html",
+      "secureLabelUrl": "http://localhost:3000/api/secure/label/DEE-B44144?exp=1795868923621&sig=299999f5a7cb3236826d6c52cf3674494d521b535b65c0088e3cea135c7982b4",
+      "note": "Handle with care"
+    },
+    "whatsappNotification": {
+      "status": "PENDING",
+      "lastError": "",
+      "attempts": 0
+    },
+    "emailNotification": {
+      "status": "PENDING",
+      "lastError": "",
+      "attempts": 0
+    },
+    "createdAt": "2026-11-26T12:28:43.620Z",
+    "updatedAt": "2026-11-26T12:28:43.620Z"
+  }
+}
