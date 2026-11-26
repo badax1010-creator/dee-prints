@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { ArrowLeft, Check, Copy, Download, FileText, Lock, Printer } from 'lucide-react';
+import { buildEnvelopeLabelHtml } from '../envelopeHtml';
 import { auth, isAuthorizedAdminUser, signInAdminWithGoogle, subscribeToAuth } from '../firebase';
 import { FINISHING_OPTIONS, normalizeOrderStatus, PAYMENT_OPTIONS, PrintOrderRecord } from '../types';
 import { EnvelopePreview } from './EnvelopePreview';
@@ -60,10 +61,15 @@ export const OrderSheetView: React.FC<OrderSheetViewProps> = ({
           headers.Authorization = `Bearer ${token}`;
         }
 
+        const localRaw = sessionStorage.getItem(`dee_order_${orderId}`);
+        const localOrder = localRaw ? (JSON.parse(localRaw) as PrintOrderRecord) : null;
+
         const res = await fetch(`/api/orders/${encodeURIComponent(orderId)}${querySuffix}`, {
           headers,
         });
-        if (res.status === 401 || res.status === 403) {
+        const isJson = res.headers.get('content-type')?.includes('application/json');
+
+        if ((res.status === 401 || res.status === 403) && !localOrder) {
           if (active) {
             setNeedsAdminSignIn(true);
             setError('This print job sheet is private. Sign in as administrator or open the signed order receipt link.');
@@ -71,20 +77,30 @@ export const OrderSheetView: React.FC<OrderSheetViewProps> = ({
           }
           return;
         }
-        if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
-          throw new Error(data.error || 'Could not load this assignment order.');
+        if (res.ok && isJson) {
+          const data = (await res.json()) as {
+            order: PrintOrderRecord;
+            whatsappMessageText: string;
+          };
+          if (active) {
+            setOrder(data.order);
+            setWhatsappText(data.whatsappMessageText || '');
+            setLoading(false);
+          }
+          return;
         }
-
-        const data = (await res.json()) as {
-          order: PrintOrderRecord;
-          whatsappMessageText: string;
-        };
-        if (active) {
-          setOrder(data.order);
-          setWhatsappText(data.whatsappMessageText || '');
-          setLoading(false);
+        if (localOrder) {
+          if (active) {
+            setOrder(localOrder);
+            setWhatsappText(
+              `Order Reference: ${localOrder.orderId}\nStudent: ${localOrder.customer.fullName}\nTotal: ${localOrder.pricing.currency} ${localOrder.pricing.total}`,
+            );
+            setLoading(false);
+          }
+          return;
         }
+        const errData = isJson ? await res.json().catch(() => ({})) : {};
+        throw new Error(errData.error || 'Could not load this assignment order.');
       } catch (err) {
         if (active) {
           setError(err instanceof Error ? err.message : 'Unable to load order.');
@@ -236,43 +252,71 @@ export const OrderSheetView: React.FC<OrderSheetViewProps> = ({
               <p className="text-xs font-mono text-[#6B6760] uppercase">
                 Uploaded Documents ({documents.length})
               </p>
-              <a
-                href={`${order.envelopeLabel.secureLabelUrl}&download=1`}
-                download={`DEE-PRINTS-Label-${order.orderId}.html`}
+              <button
+                type="button"
+                onClick={() => {
+                  const html = buildEnvelopeLabelHtml({
+                    orderId: order.orderId,
+                    customer: order.customer,
+                    copies: order.printing.copies,
+                    finishingLabel,
+                    envelopeQuantity: order.printing.envelopeQuantity,
+                    note: order.envelopeLabel?.note,
+                  });
+                  const blob = new Blob([html], { type: 'text/html;charset=utf-8' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `DEE-PRINTS-Label-${order.orderId}.html`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  setTimeout(() => URL.revokeObjectURL(url), 1500);
+                }}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#141413] border border-[#D4D0C8] rounded-md hover:bg-[#F3F1EC] transition-colors"
               >
                 Download Label HTML
-              </a>
+              </button>
             </div>
-            {documents.map((docItem) => (
-              <div
-                key={docItem.fileId}
-                className="flex flex-wrap items-center justify-between gap-3 py-2 border-b border-[#F3F1EC] last:border-b-0"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <div className="w-10 h-10 rounded-lg bg-[#F3F1EC] flex items-center justify-center shrink-0">
-                    <FileText className="w-4 h-4 text-[#141413]" />
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-[#141413] truncate">
-                      {docItem.filename}
-                    </p>
-                    <p className="text-xs font-mono text-[#6B6760] tabular-nums">
-                      {docItem.extension.toUpperCase()} · {docItem.pages}{' '}
-                      {docItem.pages === 1 ? 'page' : 'pages'} · {formatBytes(docItem.sizeBytes)}
-                    </p>
-                  </div>
-                </div>
-                <a
-                  href={`${docItem.secureDownloadUrl}&download=1`}
-                  download={docItem.filename}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#141413] rounded-md hover:bg-[#2C2A27] transition-colors shrink-0"
+            {documents.map((docItem) => {
+              const isFirebaseUrl = /^https:\/\/firebasestorage\.googleapis\.com/i.test(
+                docItem.secureDownloadUrl,
+              );
+              const downloadHref = isFirebaseUrl
+                ? docItem.secureDownloadUrl
+                : `${docItem.secureDownloadUrl}${docItem.secureDownloadUrl.includes('?') ? '&' : '?'}download=1`;
+              return (
+                <div
+                  key={docItem.fileId}
+                  className="flex flex-wrap items-center justify-between gap-3 py-2 border-b border-[#F3F1EC] last:border-b-0"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  Download
-                </a>
-              </div>
-            ))}
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-lg bg-[#F3F1EC] flex items-center justify-center shrink-0">
+                      <FileText className="w-4 h-4 text-[#141413]" />
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-[#141413] truncate">
+                        {docItem.filename}
+                      </p>
+                      <p className="text-xs font-mono text-[#6B6760] tabular-nums">
+                        {docItem.extension.toUpperCase()} · {docItem.pages}{' '}
+                        {docItem.pages === 1 ? 'page' : 'pages'} · {formatBytes(docItem.sizeBytes)}
+                      </p>
+                    </div>
+                  </div>
+                  <a
+                    href={downloadHref}
+                    target={isFirebaseUrl ? '_blank' : undefined}
+                    rel={isFirebaseUrl ? 'noopener noreferrer' : undefined}
+                    download={isFirebaseUrl ? undefined : docItem.filename}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#141413] rounded-md hover:bg-[#2C2A27] transition-colors shrink-0"
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                    Download
+                  </a>
+                </div>
+              );
+            })}
           </div>
 
           <div className="rounded-xl border border-[#E5E3DE] bg-white p-6">

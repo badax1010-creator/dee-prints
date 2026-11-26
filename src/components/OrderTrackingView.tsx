@@ -10,7 +10,8 @@ import {
   Search,
   XCircle,
 } from 'lucide-react';
-import { ORDER_TRACKING_STAGES, OrderStatus } from '../types';
+import { ORDER_TRACKING_STAGES, OrderStatus, PrintOrderRecord } from '../types';
+import { buildWhatsappOrderUrl } from '../whatsapp';
 
 interface OrderTrackingViewProps {
   initialRef?: string;
@@ -65,6 +66,8 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [tracked, setTracked] = useState<TrackedOrderSummary | null>(null);
 
+  const [cachedOrder, setCachedOrder] = useState<PrintOrderRecord | null>(null);
+
   const performLookup = async (rawRef: string) => {
     const cleanRef = rawRef.trim().toUpperCase();
     if (!cleanRef) {
@@ -73,13 +76,60 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
     }
     setLoading(true);
     setError(null);
+    setCachedOrder(null);
     try {
-      const res = await fetch(`/api/track/${encodeURIComponent(cleanRef)}`);
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Could not locate order.');
+      const localRaw = sessionStorage.getItem(`dee_order_${cleanRef}`);
+      const localOrder = localRaw ? (JSON.parse(localRaw) as PrintOrderRecord) : null;
+      if (localOrder) {
+        setCachedOrder(localOrder);
       }
-      setTracked(data as TrackedOrderSummary);
+
+      const res = await fetch(`/api/track/${encodeURIComponent(cleanRef)}`);
+      const isJson = res.headers.get('content-type')?.includes('application/json');
+      if (isJson) {
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error || 'Could not locate order.');
+        }
+        setTracked(data as TrackedOrderSummary);
+      } else if (localOrder) {
+        setTracked({
+          orderId: localOrder.orderId,
+          status: localOrder.status,
+          submissionMode: localOrder.submissionMode || 'web_checkout',
+          documentCount: localOrder.documents?.length || 1,
+          totalPages: localOrder.document.pages,
+          copies: localOrder.printing.copies,
+          sides: localOrder.printing.sides,
+          printType: localOrder.printing.printType,
+          finishing: localOrder.printing.finishing,
+          selectedServiceNames: localOrder.selectedServices || [],
+          deliveryMethod: localOrder.delivery.method,
+          pricingSummary: {
+            currency: localOrder.pricing.currency,
+            printingCost:
+              localOrder.pricing.printingCost ??
+              (localOrder.pricing.bwCost + localOrder.pricing.colorCost),
+            packagingCost:
+              localOrder.pricing.packagingCost ?? localOrder.pricing.envelopeCost,
+            deliveryFee: localOrder.pricing.deliveryFee ?? 0,
+            additionalServicesCost: localOrder.pricing.additionalServicesCost ?? 0,
+            additionalCharges: localOrder.pricing.additionalCharges ?? 0,
+            total: localOrder.pricing.total,
+          },
+          quotation: localOrder.quotation || null,
+          paymentStatus: localOrder.payment.status,
+          paymentMethod: localOrder.payment.method,
+          whatsappLinked: Boolean(localOrder.whatsappSession?.conversationRef),
+          createdAt: localOrder.createdAt,
+          updatedAt: localOrder.updatedAt,
+        });
+      } else {
+        throw new Error(
+          `Order ${cleanRef} could not be loaded on this device. Please contact DEE PRINTS on WhatsApp with your reference.`,
+        );
+      }
+
       const url = new URL(window.location.href);
       url.searchParams.set('ref', cleanRef);
       window.history.replaceState({}, '', url.pathname + url.search);
@@ -178,7 +228,23 @@ export const OrderTrackingView: React.FC<OrderTrackingViewProps> = ({
 
               <div className="flex flex-wrap items-center gap-2">
                 <a
-                  href={`/api/dispatch/whatsapp/${encodeURIComponent(tracked.orderId)}`}
+                  href={buildWhatsappOrderUrl(
+                    cachedOrder
+                      ? {
+                          orderId: cachedOrder.orderId,
+                          documents: cachedOrder.documents,
+                          document: cachedOrder.document,
+                          customer: cachedOrder.customer,
+                          printing: cachedOrder.printing,
+                          pricing: cachedOrder.pricing,
+                          delivery: cachedOrder.delivery,
+                          payment: cachedOrder.payment,
+                          envelopeNote: cachedOrder.envelopeLabel?.note,
+                        }
+                      : {
+                          orderId: tracked.orderId,
+                        },
+                  )}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-white bg-[#141413] rounded-lg hover:bg-[#2C2A27] transition-colors"

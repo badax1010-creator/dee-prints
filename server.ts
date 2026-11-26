@@ -1066,7 +1066,11 @@ async function processUploadedFiles(
       fs.writeFileSync(legacyPath, validated.buffer);
     }
 
-    const secureDownloadUrl = createSignedUrl(baseUrl, 'document', orderId, fileId);
+    const providedUrl =
+      typeof raw.firebaseDownloadUrl === 'string' && /^https:\/\//i.test(raw.firebaseDownloadUrl.trim())
+        ? raw.firebaseDownloadUrl.trim().slice(0, 600)
+        : '';
+    const secureDownloadUrl = providedUrl || createSignedUrl(baseUrl, 'document', orderId, fileId);
     documents.push({
       fileId,
       filename: validated.filename,
@@ -1105,7 +1109,90 @@ async function handleConversationalWhatsappMessage(
 
   if (orderRefMatch) {
     const foundId = orderRefMatch[1];
-    const order = db[foundId];
+    let order = db[foundId];
+    const urlMatch = cleanText.match(/https:\/\/firebasestorage\.googleapis\.com\/[^\s]+/i);
+
+    if (!order && urlMatch) {
+      const pricingConfig = readPricingConfig();
+      const docUrl = urlMatch[0].slice(0, 600);
+      order = {
+        orderId: foundId,
+        clientRequestId: `wa_bridge_${foundId}`,
+        submissionMode: 'whatsapp_session',
+        status: 'ORDER RECEIVED',
+        customer: {
+          fullName: 'Pending via WhatsApp',
+          studentId: 'Pending',
+          institution: 'Pending via WhatsApp',
+          department: 'Pending via WhatsApp',
+          course: 'Pending via WhatsApp',
+          lecturerName: 'Pending via WhatsApp',
+          assignmentTitle: 'Uploaded Document',
+          whatsappPhone: senderPhone.slice(0, 40),
+        },
+        document: {
+          filename: 'uploaded-document.pdf',
+          pages: 1,
+          sizeBytes: 1,
+          storagePath: `orders/${foundId}/uploaded-document.pdf`,
+          secureDownloadUrl: docUrl,
+        },
+        documents: [
+          {
+            fileId: 'file_1',
+            filename: 'uploaded-document.pdf',
+            mimeType: 'application/pdf',
+            extension: 'pdf',
+            pages: 1,
+            sizeBytes: 1,
+            storagePath: `orders/${foundId}/uploaded-document.pdf`,
+            secureDownloadUrl: docUrl,
+          },
+        ],
+        printing: {
+          printType: 'bw',
+          bwPages: 1,
+          colorPages: 0,
+          sides: 'single',
+          copies: 1,
+          paperSize: 'A4',
+          finishing: 'none',
+          envelopeQuantity: 1,
+          notes: '',
+        },
+        pricing: {
+          currency: pricingConfig.currency,
+          bwSheets: 1,
+          colorSheets: 0,
+          bwCost: pricingConfig.bwPagePrice,
+          colorCost: 0,
+          envelopeCost: pricingConfig.brownEnvelopePrice,
+          additionalCharges: 0,
+          total: pricingConfig.bwPagePrice + pricingConfig.brownEnvelopePrice,
+        },
+        payment: {
+          method: 'payment_on_delivery',
+          status: 'PENDING',
+          reference: '',
+        },
+        delivery: {
+          method: 'campus_delivery',
+          location: 'Pending via WhatsApp',
+          timeWindow: 'Next Available (Urgent / Class Today)',
+          instructions: '',
+        },
+        envelopeLabel: {
+          storagePath: `orders/${foundId}/envelope-label.html`,
+          secureLabelUrl: '',
+          note: '',
+        },
+        whatsappNotification: { status: 'SENT', lastError: '', attempts: 1 },
+        emailNotification: { status: 'PENDING', lastError: '', attempts: 0 },
+        createdAt: nowIso,
+        updatedAt: nowIso,
+      };
+    }
+
     if (!order) {
       return `We could not find Order Reference ${foundId}. Please double-check your reference ID or upload your document on our website.`;
     }
@@ -1325,10 +1412,19 @@ async function startServer() {
       }
       inFlightRequestIds.add(clientRequestId);
 
+      const preferred =
+        typeof body.preferredOrderId === 'string' &&
+        /^(DEE|LIM)-[A-Z0-9-]+$/.test(body.preferredOrderId.trim().toUpperCase())
+          ? body.preferredOrderId.trim().toUpperCase()
+          : '';
       let orderId = '';
-      do {
-        orderId = `DEE-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-      } while (existingDb[orderId]);
+      if (preferred && !existingDb[preferred]) {
+        orderId = preferred;
+      } else {
+        do {
+          orderId = `DEE-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+        } while (existingDb[orderId]);
+      }
 
       const processed = await processUploadedFiles(orderId, baseUrl, body.files || []);
       if (!processed.ok) {
@@ -1451,7 +1547,10 @@ async function startServer() {
         },
         envelopeLabel: {
           storagePath: `orders/${orderId}/envelope-label.html`,
-          secureLabelUrl: createSignedUrl(baseUrl, 'label', orderId),
+          secureLabelUrl:
+            typeof body.labelDownloadUrl === 'string' && /^https:\/\//i.test(body.labelDownloadUrl.trim())
+              ? body.labelDownloadUrl.trim().slice(0, 600)
+              : createSignedUrl(baseUrl, 'label', orderId),
           note: envelopeNote,
         },
         whatsappNotification: {
@@ -1476,10 +1575,22 @@ async function startServer() {
       existingDb[orderId] = record;
       writeOrdersDb(existingDb);
 
+      const adminWaSettings = readAdminSettings();
+      const rawWaNum = adminWaSettings.adminWhatsappNumbers[0] || DEFAULT_BUSINESS_WA;
+      const waRecipient = rawWaNum.startsWith('0') ? `232${rawWaNum.slice(1)}` : rawWaNum;
+      const waMessage = [
+        'Hello Dee Prints. I want to place a printing order.',
+        '',
+        `Order Reference: ${orderId}`,
+        `Documents: ${processed.documents.map((d) => `${d.filename} (${d.pages}p) - ${d.secureDownloadUrl}`).join('\n')}`,
+        '',
+        'I have uploaded my document through your website. Please help me complete my order.',
+      ].join('\n');
+
       return res.status(201).json({
         order: record,
         orderViewUrl: createSignedUrl(baseUrl, 'order', orderId),
-        whatsappContinueUrl: `${baseUrl}/api/dispatch/whatsapp/${encodeURIComponent(orderId)}`,
+        whatsappContinueUrl: `https://wa.me/${waRecipient}?text=${encodeURIComponent(waMessage)}`,
         trackUrl: `${baseUrl}/track?ref=${encodeURIComponent(orderId)}`,
         envelopeHtml,
       });
@@ -1578,11 +1689,20 @@ async function startServer() {
         });
       }
 
-      // 3. Generate unique Order ID and validate & save files
+      // 3. Generate unique Order ID (or honor preferredOrderId) and validate & save files
+      const preferredOrder =
+        typeof body.preferredOrderId === 'string' &&
+        /^(DEE|LIM)-[A-Z0-9-]+$/.test(body.preferredOrderId.trim().toUpperCase())
+          ? body.preferredOrderId.trim().toUpperCase()
+          : '';
       let orderId = '';
-      do {
-        orderId = `DEE-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
-      } while (existingDb[orderId]);
+      if (preferredOrder && !existingDb[preferredOrder]) {
+        orderId = preferredOrder;
+      } else {
+        do {
+          orderId = `DEE-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+        } while (existingDb[orderId]);
+      }
 
       const processed = await processUploadedFiles(orderId, baseUrl, incomingFiles);
       if (!processed.ok) {
@@ -1664,7 +1784,10 @@ async function startServer() {
           ? `${firstDoc.filename} (+${processed.documents.length - 1} more)`
           : firstDoc.filename;
 
-      const secureLabelUrl = createSignedUrl(baseUrl, 'label', orderId);
+      const secureLabelUrl =
+        typeof body.labelDownloadUrl === 'string' && /^https:\/\//i.test(body.labelDownloadUrl.trim())
+          ? body.labelDownloadUrl.trim().slice(0, 600)
+          : createSignedUrl(baseUrl, 'label', orderId);
       const nowIso = new Date().toISOString();
 
       const record: PrintOrderRecord = {
@@ -1734,12 +1857,17 @@ async function startServer() {
       existingDb[orderId] = record;
       writeOrdersDb(existingDb);
 
+      const adminWaSettings = readAdminSettings();
+      const rawWaNum = adminWaSettings.adminWhatsappNumbers[0] || DEFAULT_BUSINESS_WA;
+      const waRecipient = rawWaNum.startsWith('0') ? `232${rawWaNum.slice(1)}` : rawWaNum;
+      const directWaMessage = buildWhatsAppAdminNotificationText(record);
+
       return res.status(201).json({
         order: record,
         orderViewUrl: createSignedUrl(baseUrl, 'order', orderId),
-        whatsappContinueUrl: `${baseUrl}/api/dispatch/whatsapp/${encodeURIComponent(orderId)}`,
+        whatsappContinueUrl: `https://wa.me/${waRecipient}?text=${encodeURIComponent(directWaMessage)}`,
         trackUrl: `${baseUrl}/track?ref=${encodeURIComponent(orderId)}`,
-        whatsappMessageText: buildWhatsAppAdminNotificationText(record),
+        whatsappMessageText: directWaMessage,
         envelopeHtml,
       });
     } catch (err) {

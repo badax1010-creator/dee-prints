@@ -128,9 +128,14 @@ async function authenticatedDownload(url: string, fallbackFilename: string, user
   const res = await fetch(url, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
+  const contentType = res.headers.get('content-type') || '';
+  if (!res.ok || (contentType.includes('text/html') && !url.endsWith('/label'))) {
+    const err = contentType.includes('application/json') ? await res.json().catch(() => ({})) : {};
     throw new Error(err.error || `Download failed (${res.status})`);
+  }
+  const textSample = contentType.includes('text/html') ? await res.clone().text() : '';
+  if (textSample.includes('<div id="root">')) {
+    throw new Error('Static host fallback detected.');
   }
   const blob = await res.blob();
   const objectUrl = URL.createObjectURL(blob);
@@ -202,7 +207,7 @@ const AdminDashboardContent: React.FC<{ user: User }> = ({ user }) => {
       const res = await fetch('/api/admin/orders', {
         headers: { Authorization: `Bearer ${token}` },
       });
-      if (res.ok) {
+      if (res.ok && res.headers.get('content-type')?.includes('application/json')) {
         const data = (await res.json()) as { orders: PrintOrderRecord[] };
         for (const srvOrder of data.orders.slice(0, 40)) {
           await syncBotOrderToFirestore(srvOrder);
@@ -260,7 +265,7 @@ const AdminDashboardContent: React.FC<{ user: User }> = ({ user }) => {
           fetch('/api/admin/services', { headers: { Authorization: `Bearer ${token}` } }),
         ]);
 
-        if (serverRes.ok) {
+        if (serverRes.ok && serverRes.headers.get('content-type')?.includes('application/json')) {
           const srv = (await serverRes.json()) as {
             adminWhatsappNumbers: string[];
             whatsappTemplateName: string;
@@ -292,11 +297,11 @@ const AdminDashboardContent: React.FC<{ user: User }> = ({ user }) => {
           setTemplateLang(priv.whatsappTemplateLanguage);
         }
 
-        if (srvPricingRes.ok) {
+        if (srvPricingRes.ok && srvPricingRes.headers.get('content-type')?.includes('application/json')) {
           const pJson = (await srvPricingRes.json()) as PricingConfig;
           setPricingConfig(pJson);
         }
-        if (srvSvcRes.ok) {
+        if (srvSvcRes.ok && srvSvcRes.headers.get('content-type')?.includes('application/json')) {
           const sJson = (await srvSvcRes.json()) as { services: PrintingServiceItem[] };
           if (Array.isArray(sJson.services) && sJson.services.length > 0) {
             setServices(sJson.services);
@@ -541,11 +546,46 @@ const AdminDashboardContent: React.FC<{ user: User }> = ({ user }) => {
     setActionBusy(`doc_${fileId}`);
     setActionFeedback(null);
     try {
-      await authenticatedDownload(
-        `/api/admin/orders/${encodeURIComponent(order.orderId)}/document?fileId=${encodeURIComponent(fileId)}`,
-        filename,
-        user,
-      );
+      const targetDoc =
+        order.documents?.find((d) => d.fileId === fileId) ||
+        order.documents?.[0];
+      const firebaseUrl = targetDoc?.secureDownloadUrl || order.document.secureDownloadUrl;
+
+      try {
+        const token = await user.getIdToken();
+        const res = await fetch(
+          `/api/admin/orders/${encodeURIComponent(order.orderId)}/document?fileId=${encodeURIComponent(fileId)}`,
+          { headers: { Authorization: `Bearer ${token}` } },
+        );
+        const contentType = res.headers.get('content-type') || '';
+        if (res.ok && !contentType.includes('text/html')) {
+          const blob = await res.blob();
+          const objectUrl = URL.createObjectURL(blob);
+          const anchor = document.createElement('a');
+          anchor.href = objectUrl;
+          anchor.download = filename;
+          document.body.appendChild(anchor);
+          anchor.click();
+          document.body.removeChild(anchor);
+          setTimeout(() => URL.revokeObjectURL(objectUrl), 1500);
+          return;
+        }
+      } catch {
+        // Fall through to Firebase Storage download URL
+      }
+
+      if (firebaseUrl && /^https:\/\//i.test(firebaseUrl)) {
+        const anchor = document.createElement('a');
+        anchor.href = firebaseUrl;
+        anchor.target = '_blank';
+        anchor.rel = 'noopener noreferrer';
+        document.body.appendChild(anchor);
+        anchor.click();
+        document.body.removeChild(anchor);
+        return;
+      }
+
+      throw new Error('Document file could not be downloaded.');
     } catch (err) {
       setActionFeedback({
         type: 'err',

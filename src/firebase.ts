@@ -21,7 +21,7 @@ import {
   setDoc,
   updateDoc,
 } from 'firebase/firestore';
-import { getStorage, ref, uploadBytes, uploadBytesResumable } from 'firebase/storage';
+import { getDownloadURL, getStorage, ref, uploadBytes, uploadBytesResumable } from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
 import {
   AdminPrivateSettings,
@@ -131,24 +131,41 @@ export function isAuthorizedAdminUser(user: User | null): boolean {
   return user.email.toLowerCase() === ADMIN_EMAIL;
 }
 
+export interface UploadedStorageFileResult {
+  filename: string;
+  storagePath: string;
+  downloadUrl: string;
+}
+
 export async function uploadFilesToFirebaseStorageWithProgress(
   orderId: string,
   files: File[],
   envelopeHtml?: string,
   onProgress?: (percent: number) => void,
-): Promise<{ filePaths: string[]; labelStoragePath: string }> {
+): Promise<{
+  uploaded: UploadedStorageFileResult[];
+  filePaths: string[];
+  labelStoragePath: string;
+  labelDownloadUrl: string;
+}> {
+  if (!files || files.length === 0) {
+    throw new Error('No document selected for Firebase Storage upload.');
+  }
+
+  const uploaded: UploadedStorageFileResult[] = [];
   const filePaths: string[] = [];
   let labelStoragePath = '';
+  let labelDownloadUrl = '';
 
-  try {
-    const totalBytes = files.reduce((sum, f) => sum + Math.max(1, f.size), 0);
-    let completedBytes = 0;
+  const totalBytes = files.reduce((sum, f) => sum + Math.max(1, f.size), 0);
+  let completedBytes = 0;
 
-    for (const file of files) {
-      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
-      const storagePath = `orders/${orderId}/${safeName}`;
-      const fileRef = ref(storage, storagePath);
+  for (const file of files) {
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120) || 'document';
+    const storagePath = `orders/${orderId}/${safeName}`;
+    const fileRef = ref(storage, storagePath);
 
+    try {
       await new Promise<void>((resolve, reject) => {
         const task = uploadBytesResumable(fileRef, file, {
           contentType: file.type || 'application/octet-stream',
@@ -158,8 +175,8 @@ export async function uploadFilesToFirebaseStorageWithProgress(
           (snapshot) => {
             if (onProgress && totalBytes > 0) {
               const overall = Math.min(
-                98,
-                Math.round(((completedBytes + snapshot.bytesTransferred) / totalBytes) * 100),
+                95,
+                Math.round(((completedBytes + snapshot.bytesTransferred) / totalBytes) * 95),
               );
               onProgress(overall);
             }
@@ -169,35 +186,57 @@ export async function uploadFilesToFirebaseStorageWithProgress(
         );
       });
 
+      const downloadUrl = await getDownloadURL(fileRef);
       completedBytes += file.size;
       filePaths.push(storagePath);
+      uploaded.push({
+        filename: file.name,
+        storagePath,
+        downloadUrl,
+      });
+    } catch (err) {
+      const code =
+        err && typeof err === 'object' && 'code' in err
+          ? String((err as { code?: unknown }).code)
+          : '';
+      const detail = err instanceof Error ? err.message : String(err);
+      if (code === 'storage/unauthorized') {
+        throw new Error(
+          `Upload permission denied for "${file.name}". Please ensure the file is a valid PDF, DOC, or DOCX under 20 MB.`,
+        );
+      }
+      throw new Error(`Failed to upload "${file.name}" to Firebase Storage: ${detail}`);
     }
-
-    if (envelopeHtml) {
-      labelStoragePath = `orders/${orderId}/envelope-label.html`;
-      const labelRef = ref(storage, labelStoragePath);
-      const labelBlob = new Blob([envelopeHtml], { type: 'text/html;charset=utf-8' });
-      await uploadBytes(labelRef, labelBlob, { contentType: 'text/html;charset=utf-8' });
-    }
-
-    if (onProgress) onProgress(100);
-    return { filePaths, labelStoragePath };
-  } catch (err) {
-    console.warn('Firebase Storage direct upload skipped/deferred to server vault:', err);
-    if (onProgress) onProgress(100);
-    return { filePaths: [], labelStoragePath: '' };
   }
+
+  if (envelopeHtml) {
+    labelStoragePath = `orders/${orderId}/envelope-label.html`;
+    const labelRef = ref(storage, labelStoragePath);
+    const labelBlob = new Blob([envelopeHtml], { type: 'text/html;charset=utf-8' });
+    await uploadBytes(labelRef, labelBlob, { contentType: 'text/html;charset=utf-8' });
+    labelDownloadUrl = await getDownloadURL(labelRef);
+  }
+
+  if (onProgress) onProgress(100);
+  return { uploaded, filePaths, labelStoragePath, labelDownloadUrl };
 }
 
 export async function uploadOrderAssetsToFirebaseStorage(
   orderId: string,
   pdfFile: File,
   envelopeHtml: string,
-): Promise<{ pdfStoragePath: string; labelStoragePath: string }> {
+): Promise<{
+  pdfStoragePath: string;
+  pdfDownloadUrl: string;
+  labelStoragePath: string;
+  labelDownloadUrl: string;
+}> {
   const result = await uploadFilesToFirebaseStorageWithProgress(orderId, [pdfFile], envelopeHtml);
   return {
     pdfStoragePath: result.filePaths[0] || '',
+    pdfDownloadUrl: result.uploaded[0]?.downloadUrl || '',
     labelStoragePath: result.labelStoragePath,
+    labelDownloadUrl: result.labelDownloadUrl,
   };
 }
 
@@ -407,7 +446,7 @@ export async function fetchPricingConfig(): Promise<PricingConfig> {
     const snap = await getDoc(doc(db, 'settings', 'pricing'));
     if (!snap.exists()) {
       const srvRes = await fetch('/api/settings/public').catch(() => null);
-      if (srvRes && srvRes.ok) {
+      if (srvRes && srvRes.ok && srvRes.headers.get('content-type')?.includes('application/json')) {
         const srvJson = (await srvRes.json()) as { pricingConfig?: PricingConfig };
         if (srvJson.pricingConfig) {
           return { ...DEFAULT_PRICING_CONFIG, ...srvJson.pricingConfig };
@@ -462,7 +501,7 @@ export async function fetchServicesCatalog(): Promise<PrintingServiceItem[]> {
     const snap = await getDoc(doc(db, 'settings', 'services'));
     if (!snap.exists()) {
       const srvRes = await fetch('/api/settings/public').catch(() => null);
-      if (srvRes && srvRes.ok) {
+      if (srvRes && srvRes.ok && srvRes.headers.get('content-type')?.includes('application/json')) {
         const srvJson = (await srvRes.json()) as { services?: PrintingServiceItem[] };
         if (Array.isArray(srvJson.services) && srvJson.services.length > 0) {
           return srvJson.services;

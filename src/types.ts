@@ -605,10 +605,12 @@ export interface UploadedFilePayload {
   sizeBytes: number;
   pages?: number;
   storagePath?: string;
+  firebaseDownloadUrl?: string;
 }
 
 export interface SubmitOrderPayload {
   clientRequestId: string;
+  preferredOrderId?: string;
   pdfBase64?: string;
   pdfFilename?: string;
   pdfSizeBytes?: number;
@@ -625,14 +627,17 @@ export interface SubmitOrderPayload {
   currency?: string;
   storagePath?: string;
   labelStoragePath?: string;
+  labelDownloadUrl?: string;
 }
 
 export interface UploadSessionPayload {
   clientRequestId: string;
+  preferredOrderId?: string;
   files: UploadedFilePayload[];
   customer?: Partial<CustomerDetails>;
   printing?: Partial<PrintingPreferences>;
   selectedServices?: string[];
   delivery?: Partial<DeliveryDetails>;
   envelopeNote?: string;
+  labelDownloadUrl?: string;
 }
