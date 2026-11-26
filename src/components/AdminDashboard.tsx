@@ -1240,7 +1240,7 @@ const AdminDashboardContent: React.FC<{ user: User }> = ({ user }) => {
                 Storefront, Email &amp; WhatsApp Bot Settings
               </h2>
               <p className="text-xs text-[#57544E] mt-1">
-                Configure display currency, payment account instructions, administrator order inbox email, and WhatsApp Business numbers (+23279576978).
+                Configure display currency, payment account instructions, administrator order inbox email, and WhatsApp Business numbers (+232 country code).
               </p>
             </div>
 
@@ -1248,15 +1248,15 @@ const AdminDashboardContent: React.FC<{ user: User }> = ({ user }) => {
               <div className="rounded-lg border border-[#E5E3DE] bg-[#FAF9F7] p-3">
                 <p className="font-mono text-[#6B6760]">EMAIL TRANSPORT</p>
                 <p className="font-semibold text-[#141413] mt-0.5">
-                  {emailApiConfigured ? 'Configured & Active' : 'Awaiting SMTP_USER / SMTP_PASS or RESEND_API_KEY'}
+                  {emailApiConfigured ? 'Configured & Active' : 'Awaiting Server Email Credentials'}
                 </p>
               </div>
               <div className="rounded-lg border border-[#E5E3DE] bg-[#FAF9F7] p-3">
                 <p className="font-mono text-[#6B6760]">WHATSAPP CLOUD API &amp; BOT</p>
                 <p className="font-semibold text-[#141413] mt-0.5">
                   {whatsappApiConfigured ? 'Cloud API Active' : 'Click-to-Chat Active · Cloud Token Optional'} ·{' '}
-                  {webhookConfigured ? 'Webhook Verified' : 'Set WHATSAPP_VERIFY_TOKEN'} ·{' '}
-                  {botSecretConfigured ? 'Bot Auth Ready' : 'Set BOT_API_SECRET'}
+                  {webhookConfigured ? 'Webhook Verified' : 'Webhook Token Pending'} ·{' '}
+                  {botSecretConfigured ? 'Bot Auth Ready' : 'Bot Auth Pending'}
                 </p>
               </div>
             </div>
@@ -1339,7 +1339,7 @@ const AdminDashboardContent: React.FC<{ user: User }> = ({ user }) => {
                 type="text"
                 value={adminNumbersText}
                 onChange={(e) => setAdminNumbersText(e.target.value)}
-                placeholder="23279576978"
+                placeholder="232XXXXXXXX"
                 className="w-full rounded-lg border border-[#D4D0C8] bg-white px-3.5 py-2.5 text-sm font-mono text-[#141413] focus:border-[#141413] focus:outline-none"
               />
             </div>

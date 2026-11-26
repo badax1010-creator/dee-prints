@@ -38,7 +38,6 @@ const ADMIN_SETTINGS_PATH = path.join(UPLOADS_ROOT, 'admin_settings.json');
 const PRICING_CONFIG_PATH = path.join(UPLOADS_ROOT, 'pricing_config.json');
 const SERVICES_CATALOG_PATH = path.join(UPLOADS_ROOT, 'services_catalog.json');
 const WHATSAPP_SESSIONS_PATH = path.join(UPLOADS_ROOT, 'whatsapp_sessions.json');
-const SIGNING_KEY_PATH = path.join(UPLOADS_ROOT, '.signing_key');
 const ADMIN_EMAIL = 'badax1010@gmail.com';
 const DEFAULT_BUSINESS_WA = '23279576978';
 const MAX_FILE_BYTES = 20 * 1024 * 1024;
@@ -92,16 +91,7 @@ function getSigningSecret(): string {
   if (fromEnv && fromEnv.length >= 16) {
     return fromEnv;
   }
-  ensureUploadsDir();
-  if (fs.existsSync(SIGNING_KEY_PATH)) {
-    const existing = fs.readFileSync(SIGNING_KEY_PATH, 'utf8').trim();
-    if (existing.length >= 32) {
-      return existing;
-    }
-  }
-  const generated = crypto.randomBytes(32).toString('hex');
-  fs.writeFileSync(SIGNING_KEY_PATH, generated, { mode: 0o600, encoding: 'utf8' });
-  return generated;
+  return crypto.randomBytes(32).toString('hex');
 }
 
 const SIGNING_SECRET = getSigningSecret();
@@ -1896,33 +1886,38 @@ async function startServer() {
   // Meta WhatsApp Cloud API Webhook (GET verification + POST incoming conversational messages)
   app.get('/api/whatsapp/webhook', (req, res) => {
     const mode = req.query['hub.mode'];
-    const token = req.query['hub.verify_token'];
+    const token = typeof req.query['hub.verify_token'] === 'string' ? req.query['hub.verify_token'] : '';
     const challenge = req.query['hub.challenge'];
-    const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN?.trim();
+    const expectedToken = process.env.WHATSAPP_VERIFY_TOKEN?.trim() || '';
 
-    if (mode === 'subscribe' && expectedToken && token === expectedToken) {
-      return res.status(200).send(String(challenge || ''));
+    if (mode === 'subscribe' && expectedToken && token) {
+      const a = Buffer.from(token, 'utf8');
+      const b = Buffer.from(expectedToken, 'utf8');
+      if (a.length === b.length && crypto.timingSafeEqual(a, b)) {
+        return res.status(200).send(String(challenge || ''));
+      }
     }
     return res.status(403).json({ error: 'Webhook verification failed.' });
   });
 
   app.post('/api/whatsapp/webhook', async (req, res) => {
     const appSecret = process.env.WHATSAPP_APP_SECRET?.trim();
-    if (appSecret) {
-      const signature = req.get('x-hub-signature-256') || '';
-      const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
-      if (!rawBody || !signature.startsWith('sha256=')) {
-        return res.status(401).json({ error: 'Missing X-Hub-Signature-256 header.' });
-      }
-      const expectedSig = `sha256=${crypto
-        .createHmac('sha256', appSecret)
-        .update(rawBody)
-        .digest('hex')}`;
-      const a = Buffer.from(signature, 'utf8');
-      const b = Buffer.from(expectedSig, 'utf8');
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-        return res.status(401).json({ error: 'Invalid webhook signature.' });
-      }
+    if (!appSecret) {
+      return res.status(503).json({ error: 'WhatsApp webhook secret (WHATSAPP_APP_SECRET) is not configured.' });
+    }
+    const signature = req.get('x-hub-signature-256') || '';
+    const rawBody = (req as express.Request & { rawBody?: Buffer }).rawBody;
+    if (!rawBody || !signature.startsWith('sha256=')) {
+      return res.status(401).json({ error: 'Missing X-Hub-Signature-256 header.' });
+    }
+    const expectedSig = `sha256=${crypto
+      .createHmac('sha256', appSecret)
+      .update(rawBody)
+      .digest('hex')}`;
+    const a = Buffer.from(signature, 'utf8');
+    const b = Buffer.from(expectedSig, 'utf8');
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return res.status(401).json({ error: 'Invalid webhook signature.' });
     }
 
     const baseUrl = getBaseUrl(req);
@@ -1995,8 +1990,10 @@ async function startServer() {
     if (!fileInfo) {
       return res.status(404).json({ error: 'Document not found.' });
     }
+    const safeName = path.basename(fileInfo.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Type', fileInfo.mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${fileInfo.filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
     return res.sendFile(fileInfo.filePath);
   });
 
@@ -2134,10 +2131,12 @@ async function startServer() {
     if (!fileInfo) {
       return res.status(404).send('Document not found.');
     }
+    const safeName = path.basename(fileInfo.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Type', fileInfo.mimeType);
     res.setHeader(
       'Content-Disposition',
-      `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${fileInfo.filename}"`,
+      `${req.query.download === '1' ? 'attachment' : 'inline'}; filename="${safeName}"`,
     );
     return res.sendFile(fileInfo.filePath);
   });
@@ -2260,8 +2259,10 @@ async function startServer() {
     if (!fileInfo) {
       return res.status(404).json({ error: 'Order document not found in server vault.' });
     }
+    const safeName = path.basename(fileInfo.filename).replace(/[^a-zA-Z0-9._-]/g, '_');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Content-Type', fileInfo.mimeType);
-    res.setHeader('Content-Disposition', `attachment; filename="${fileInfo.filename}"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
     return res.sendFile(fileInfo.filePath);
   });
 

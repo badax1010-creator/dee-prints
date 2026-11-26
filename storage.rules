@@ -9,7 +9,8 @@ service firebase.storage {
 
     match /orders/{orderId}/{fileName} {
       allow read: if isAdmin();
-      allow write: if request.resource != null &&
+      allow write: if isAdmin() &&
+        request.resource != null &&
         request.resource.size <= 20 * 1024 * 1024 &&
         (
           request.resource.contentType == 'application/pdf' ||

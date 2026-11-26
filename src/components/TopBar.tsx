@@ -12,7 +12,7 @@ export const TopBar: React.FC<TopBarProps> = ({
   activeView = 'home',
   onBackHome,
   onOpenAdmin,
-  whatsappOrderUrl = '/api/dispatch/whatsapp',
+  whatsappOrderUrl = 'https://wa.me/23279576978?text=Hello%20DEE%20PRINTS!%20I%20want%20to%20place%20a%20printing%20order.%0A%0AI%20am%20ready%20to%20send%20my%20document%2FPDF%20and%20printing%20instructions%20here.',
 }) => {
   const isSubView = activeView !== 'home';
 
