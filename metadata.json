@@ -1,0 +1,6 @@
+{
+  "name": "LIM prints",
+  "description": "Limkokwing University assignment printing, custom binding, envelope labeling, and direct WhatsApp ordering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

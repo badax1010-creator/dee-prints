@@ -1,0 +1,401 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidOrderId(id) {
+      return id is string && id.size() >= 5 && id.size() <= 40 && id.matches('^(DEE|LIM)-[A-Z0-9\\-]+$');
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        (
+          request.auth.token.email == 'badax1010@gmail.com' ||
+          exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+        );
+    }
+
+    function isValidCustomer(c) {
+      return c is map &&
+        c.keys().hasAll(['fullName', 'studentId', 'institution', 'department', 'course', 'lecturerName', 'assignmentTitle', 'whatsappPhone']) &&
+        c.keys().hasOnly(['fullName', 'studentId', 'institution', 'department', 'course', 'lecturerName', 'assignmentTitle', 'whatsappPhone', 'altPhone']) &&
+        c.fullName is string && c.fullName.size() >= 1 && c.fullName.size() <= 120 &&
+        c.studentId is string && c.studentId.size() >= 1 && c.studentId.size() <= 60 &&
+        c.institution is string && c.institution.size() >= 1 && c.institution.size() <= 140 &&
+        c.department is string && c.department.size() >= 1 && c.department.size() <= 140 &&
+        c.course is string && c.course.size() >= 1 && c.course.size() <= 140 &&
+        c.lecturerName is string && c.lecturerName.size() >= 1 && c.lecturerName.size() <= 120 &&
+        c.assignmentTitle is string && c.assignmentTitle.size() >= 1 && c.assignmentTitle.size() <= 180 &&
+        c.whatsappPhone is string && c.whatsappPhone.size() >= 3 && c.whatsappPhone.size() <= 40 &&
+        (!('altPhone' in c) || (c.altPhone is string && c.altPhone.size() <= 40));
+    }
+
+    function isValidDocument(d) {
+      return d is map &&
+        d.keys().hasAll(['filename', 'pages', 'sizeBytes', 'storagePath', 'secureDownloadUrl']) &&
+        d.keys().hasOnly(['filename', 'pages', 'sizeBytes', 'storagePath', 'secureDownloadUrl']) &&
+        d.filename is string && d.filename.size() >= 1 && d.filename.size() <= 180 &&
+        d.pages is int && d.pages >= 1 && d.pages <= 2000 &&
+        d.sizeBytes is int && d.sizeBytes >= 1 && d.sizeBytes <= 104857600 &&
+        d.storagePath is string && d.storagePath.size() <= 300 &&
+        d.secureDownloadUrl is string && d.secureDownloadUrl.size() <= 600;
+    }
+
+    function isValidDocumentList(docs) {
+      return docs is list &&
+        docs.size() >= 1 &&
+        docs.size() <= 10 &&
+        docs[0] is map &&
+        docs[0].keys().hasAll(['fileId', 'filename', 'mimeType', 'extension', 'pages', 'sizeBytes', 'storagePath', 'secureDownloadUrl']) &&
+        docs[0].keys().hasOnly(['fileId', 'filename', 'mimeType', 'extension', 'pages', 'sizeBytes', 'storagePath', 'secureDownloadUrl']) &&
+        docs[0].fileId is string && docs[0].fileId.size() <= 60 &&
+        docs[0].filename is string && docs[0].filename.size() >= 1 && docs[0].filename.size() <= 180 &&
+        docs[0].mimeType is string && docs[0].mimeType.size() <= 120 &&
+        docs[0].extension in ['pdf', 'doc', 'docx'] &&
+        docs[0].pages is int && docs[0].pages >= 1 && docs[0].pages <= 2000 &&
+        docs[0].sizeBytes is int && docs[0].sizeBytes >= 1 && docs[0].sizeBytes <= 20971520 &&
+        docs[0].storagePath is string && docs[0].storagePath.size() <= 300 &&
+        docs[0].secureDownloadUrl is string && docs[0].secureDownloadUrl.size() <= 600;
+    }
+
+    function isValidSelectedServices(listVal) {
+      return listVal is list &&
+        listVal.size() <= 30 &&
+        (listVal.size() == 0 || (listVal[0] is string && listVal[0].size() <= 60));
+    }
+
+    function isValidPrinting(p) {
+      return p is map &&
+        p.keys().hasAll(['printType', 'bwPages', 'colorPages', 'sides', 'copies', 'paperSize', 'finishing', 'envelopeQuantity', 'notes']) &&
+        p.keys().hasOnly(['printType', 'bwPages', 'colorPages', 'sides', 'copies', 'paperSize', 'finishing', 'envelopeQuantity', 'notes']) &&
+        p.printType in ['bw', 'color', 'mixed'] &&
+        p.bwPages is int && p.bwPages >= 0 && p.bwPages <= 2000 &&
+        p.colorPages is int && p.colorPages >= 0 && p.colorPages <= 2000 &&
+        p.sides in ['single', 'double'] &&
+        p.copies is int && p.copies >= 1 && p.copies <= 200 &&
+        p.paperSize == 'A4' &&
+        p.finishing in ['none', 'stapling', 'spiral_binding', 'thermal_binding'] &&
+        p.envelopeQuantity is int && p.envelopeQuantity >= 0 && p.envelopeQuantity <= 200 &&
+        p.notes is string && p.notes.size() <= 400;
+    }
+
+    function isValidPricing(pr) {
+      return pr is map &&
+        pr.keys().hasAll(['currency', 'bwSheets', 'colorSheets', 'bwCost', 'colorCost', 'envelopeCost', 'additionalCharges', 'total']) &&
+        pr.keys().hasOnly(['currency', 'bwSheets', 'colorSheets', 'bwCost', 'colorCost', 'sidedCost', 'printingCost', 'envelopeCost', 'bindingCost', 'packagingCost', 'deliveryFee', 'additionalServicesCost', 'additionalCharges', 'total']) &&
+        pr.currency is string && pr.currency.size() >= 1 && pr.currency.size() <= 12 &&
+        pr.bwSheets is int && pr.bwSheets >= 0 &&
+        pr.colorSheets is int && pr.colorSheets >= 0 &&
+        pr.bwCost is number && pr.bwCost >= 0 &&
+        pr.colorCost is number && pr.colorCost >= 0 &&
+        (!('sidedCost' in pr) || (pr.sidedCost is number && pr.sidedCost >= 0)) &&
+        (!('printingCost' in pr) || (pr.printingCost is number && pr.printingCost >= 0)) &&
+        pr.envelopeCost is number && pr.envelopeCost >= 0 &&
+        (!('bindingCost' in pr) || (pr.bindingCost is number && pr.bindingCost >= 0)) &&
+        (!('packagingCost' in pr) || (pr.packagingCost is number && pr.packagingCost >= 0)) &&
+        (!('deliveryFee' in pr) || (pr.deliveryFee is number && pr.deliveryFee >= 0)) &&
+        (!('additionalServicesCost' in pr) || (pr.additionalServicesCost is number && pr.additionalServicesCost >= 0)) &&
+        pr.additionalCharges is number && pr.additionalCharges >= 0 &&
+        pr.total is number && pr.total >= 0;
+    }
+
+    function isValidPayment(pay) {
+      return pay is map &&
+        pay.keys().hasAll(['method', 'status', 'reference']) &&
+        pay.keys().hasOnly(['method', 'status', 'reference']) &&
+        pay.method in ['orange_money', 'afri_money', 'payment_on_delivery'] &&
+        pay.status in ['PENDING', 'CONFIRMED', 'FAILED'] &&
+        pay.reference is string && pay.reference.size() <= 120;
+    }
+
+    function isValidDelivery(del) {
+      return del is map &&
+        del.keys().hasAll(['method', 'location', 'timeWindow', 'instructions']) &&
+        del.keys().hasOnly(['method', 'location', 'timeWindow', 'instructions']) &&
+        del.method in ['campus_delivery', 'shop_pickup'] &&
+        del.location is string && del.location.size() >= 1 && del.location.size() <= 160 &&
+        del.timeWindow is string && del.timeWindow.size() >= 1 && del.timeWindow.size() <= 100 &&
+        del.instructions is string && del.instructions.size() <= 400;
+    }
+
+    function isValidEnvelopeLabel(el) {
+      return el is map &&
+        el.keys().hasAll(['storagePath', 'secureLabelUrl', 'note']) &&
+        el.keys().hasOnly(['storagePath', 'secureLabelUrl', 'note']) &&
+        el.storagePath is string && el.storagePath.size() <= 300 &&
+        el.secureLabelUrl is string && el.secureLabelUrl.size() <= 600 &&
+        el.note is string && el.note.size() <= 240;
+    }
+
+    function isValidNotifyStatus(w) {
+      return w is map &&
+        w.keys().hasAll(['status', 'lastError', 'attempts']) &&
+        w.keys().hasOnly(['status', 'lastError', 'attempts']) &&
+        w.status in ['SENT', 'FAILED', 'PENDING'] &&
+        w.lastError is string && w.lastError.size() <= 400 &&
+        w.attempts is int && w.attempts >= 0 && w.attempts <= 100;
+    }
+
+    function isValidWhatsappSession(ws) {
+      return ws is map &&
+        ws.keys().hasAll(['conversationRef', 'senderPhone', 'step', 'lastMessageAt']) &&
+        ws.keys().hasOnly(['conversationRef', 'senderPhone', 'step', 'lastMessageAt']) &&
+        ws.conversationRef is string && ws.conversationRef.size() <= 120 &&
+        ws.senderPhone is string && ws.senderPhone.size() <= 40 &&
+        ws.step is string && ws.step.size() <= 60 &&
+        ws.lastMessageAt is string && ws.lastMessageAt.size() <= 60;
+    }
+
+    function isValidQuotation(q) {
+      return q is map &&
+        q.keys().hasAll(['summary', 'quotedBy', 'quotedAt', 'totalAmount', 'currency']) &&
+        q.keys().hasOnly(['summary', 'quotedBy', 'quotedAt', 'totalAmount', 'currency']) &&
+        q.summary is string && q.summary.size() <= 600 &&
+        q.quotedBy is string && q.quotedBy.size() <= 120 &&
+        q.quotedAt is string && q.quotedAt.size() <= 60 &&
+        q.totalAmount is number && q.totalAmount >= 0 &&
+        q.currency is string && q.currency.size() >= 1 && q.currency.size() <= 12;
+    }
+
+    function isValidOrderStatus(statusVal) {
+      return statusVal in [
+        'ORDER RECEIVED',
+        'AWAITING PAYMENT',
+        'PAYMENT CONFIRMED',
+        'PRINTING IN PROGRESS',
+        'READY FOR COLLECTION',
+        'OUT FOR DELIVERY',
+        'SUCCESSFULLY DELIVERED',
+        'PRINTING',
+        'COMPLETED',
+        'DELIVERED',
+        'CANCELLED'
+      ];
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll([
+          'orderId', 'clientRequestId', 'status', 'customer', 'document',
+          'printing', 'pricing', 'payment', 'delivery', 'envelopeLabel',
+          'whatsappNotification', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'orderId', 'clientRequestId', 'submissionMode', 'status', 'customer',
+          'document', 'documents', 'selectedServices', 'printing', 'pricing',
+          'payment', 'delivery', 'envelopeLabel', 'whatsappNotification',
+          'emailNotification', 'whatsappSession', 'quotation', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidOrderId(data.orderId) &&
+        data.clientRequestId is string && data.clientRequestId.size() >= 8 && data.clientRequestId.size() <= 80 &&
+        data.clientRequestId.matches('^[a-zA-Z0-9_\\-]+$') &&
+        (!('submissionMode' in data) || data.submissionMode in ['whatsapp_session', 'web_checkout']) &&
+        isValidOrderStatus(data.status) &&
+        isValidCustomer(data.customer) &&
+        isValidDocument(data.document) &&
+        (!('documents' in data) || isValidDocumentList(data.documents)) &&
+        (!('selectedServices' in data) || isValidSelectedServices(data.selectedServices)) &&
+        isValidPrinting(data.printing) &&
+        isValidPricing(data.pricing) &&
+        isValidPayment(data.payment) &&
+        isValidDelivery(data.delivery) &&
+        isValidEnvelopeLabel(data.envelopeLabel) &&
+        isValidNotifyStatus(data.whatsappNotification) &&
+        (!('emailNotification' in data) || isValidNotifyStatus(data.emailNotification)) &&
+        (!('whatsappSession' in data) || isValidWhatsappSession(data.whatsappSession)) &&
+        (!('quotation' in data) || isValidQuotation(data.quotation)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAuditEntry(data) {
+      return data.keys().hasAll(['orderId', 'action', 'actorEmail', 'previousValue', 'newValue', 'note', 'createdAt']) &&
+        data.keys().hasOnly(['orderId', 'action', 'actorEmail', 'previousValue', 'newValue', 'note', 'createdAt']) &&
+        isValidOrderId(data.orderId) &&
+        data.action is string && data.action.size() >= 2 && data.action.size() <= 80 &&
+        data.actorEmail is string && data.actorEmail.size() >= 3 && data.actorEmail.size() <= 160 &&
+        data.previousValue is string && data.previousValue.size() <= 200 &&
+        data.newValue is string && data.newValue.size() <= 200 &&
+        data.note is string && data.note.size() <= 400 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidStudioSettings(data) {
+      return data.keys().hasAll(['currency', 'orangeMoneyDetails', 'afriMoneyDetails', 'updatedAt']) &&
+        data.keys().hasOnly(['currency', 'orangeMoneyDetails', 'afriMoneyDetails', 'updatedAt']) &&
+        data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 12 &&
+        data.orangeMoneyDetails is string && data.orangeMoneyDetails.size() <= 300 &&
+        data.afriMoneyDetails is string && data.afriMoneyDetails.size() <= 300 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPricingConfig(data) {
+      return data.keys().hasAll([
+          'currency', 'bwPagePrice', 'colorPagePrice', 'singleSidedPrice',
+          'doubleSidedPrice', 'brownEnvelopePrice', 'bindingPrice',
+          'deliveryFee', 'additionalServiceCharge', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'currency', 'bwPagePrice', 'colorPagePrice', 'singleSidedPrice',
+          'doubleSidedPrice', 'brownEnvelopePrice', 'bindingPrice',
+          'deliveryFee', 'additionalServiceCharge', 'updatedAt'
+        ]) &&
+        data.currency is string && data.currency.size() >= 1 && data.currency.size() <= 12 &&
+        data.bwPagePrice is number && data.bwPagePrice >= 0 &&
+        data.colorPagePrice is number && data.colorPagePrice >= 0 &&
+        data.singleSidedPrice is number && data.singleSidedPrice >= 0 &&
+        data.doubleSidedPrice is number && data.doubleSidedPrice >= 0 &&
+        data.brownEnvelopePrice is number && data.brownEnvelopePrice >= 0 &&
+        data.bindingPrice is number && data.bindingPrice >= 0 &&
+        data.deliveryFee is number && data.deliveryFee >= 0 &&
+        data.additionalServiceCharge is number && data.additionalServiceCharge >= 0 &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidServicesCatalog(data) {
+      return data.keys().hasAll(['services', 'updatedAt']) &&
+        data.keys().hasOnly(['services', 'updatedAt']) &&
+        data.services is list &&
+        data.services.size() <= 40 &&
+        (
+          data.services.size() == 0 ||
+          (
+            data.services[0] is map &&
+            data.services[0].keys().hasAll(['id', 'name', 'category', 'description', 'price', 'unitLabel', 'enabled']) &&
+            data.services[0].keys().hasOnly(['id', 'name', 'category', 'description', 'price', 'unitLabel', 'enabled']) &&
+            data.services[0].id is string && data.services[0].id.size() <= 60 &&
+            data.services[0].name is string && data.services[0].name.size() <= 120 &&
+            data.services[0].category in ['printing', 'finishing', 'document', 'delivery'] &&
+            data.services[0].description is string && data.services[0].description.size() <= 300 &&
+            data.services[0].price is number && data.services[0].price >= 0 &&
+            data.services[0].unitLabel is string && data.services[0].unitLabel.size() <= 80 &&
+            data.services[0].enabled is bool
+          )
+        ) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminSettings(data) {
+      return data.keys().hasAll(['adminWhatsappNumbers', 'whatsappTemplateName', 'whatsappTemplateLanguage', 'updatedAt']) &&
+        data.keys().hasOnly(['adminWhatsappNumbers', 'whatsappTemplateName', 'whatsappTemplateLanguage', 'adminNotificationEmail', 'updatedAt']) &&
+        data.adminWhatsappNumbers is list &&
+        data.adminWhatsappNumbers.size() >= 0 &&
+        data.adminWhatsappNumbers.size() <= 5 &&
+        (data.adminWhatsappNumbers.size() == 0 || (data.adminWhatsappNumbers[0] is string && data.adminWhatsappNumbers[0].size() <= 40)) &&
+        data.whatsappTemplateName is string && data.whatsappTemplateName.size() <= 120 &&
+        data.whatsappTemplateLanguage is string && data.whatsappTemplateLanguage.size() <= 20 &&
+        (!('adminNotificationEmail' in data) || (data.adminNotificationEmail is string && data.adminNotificationEmail.size() <= 160)) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidAdminUser(data) {
+      return data.keys().hasAll(['email', 'addedAt']) &&
+        data.keys().hasOnly(['email', 'addedAt']) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.addedAt is timestamp;
+    }
+
+    match /test/connection {
+      allow get: if true;
+    }
+
+    match /orders/{orderId} {
+      allow get, list: if isAdmin();
+      allow create: if isValidOrderId(orderId) &&
+        isValidOrder(incoming()) &&
+        incoming().orderId == orderId &&
+        (
+          isAdmin() ||
+          (
+            incoming().status == 'ORDER RECEIVED' &&
+            incoming().payment.status == 'PENDING' &&
+            incoming().pricing.additionalCharges == 0 &&
+            incoming().createdAt == request.time &&
+            incoming().updatedAt == request.time
+          )
+        );
+      allow update: if isValidOrderId(orderId) &&
+        isAdmin() &&
+        isValidOrder(incoming()) &&
+        incoming().orderId == existing().orderId &&
+        incoming().clientRequestId == existing().clientRequestId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'status',
+          'payment',
+          'pricing',
+          'customer',
+          'printing',
+          'delivery',
+          'selectedServices',
+          'quotation',
+          'whatsappSession',
+          'whatsappNotification',
+          'emailNotification',
+          'updatedAt'
+        ]);
+      allow delete: if isValidOrderId(orderId) && isAdmin();
+
+      match /audit/{auditId} {
+        allow get, list: if isAdmin();
+        allow create: if isValidId(auditId) &&
+          isAdmin() &&
+          exists(/databases/$(database)/documents/orders/$(orderId)) &&
+          isValidAuditEntry(incoming()) &&
+          incoming().orderId == orderId &&
+          incoming().createdAt == request.time;
+        allow update, delete: if false;
+      }
+    }
+
+    match /settings/{settingId} {
+      allow get: if isValidId(settingId) && (settingId in ['studio', 'pricing', 'services'] || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isValidId(settingId) &&
+        isAdmin() &&
+        incoming().updatedAt == request.time &&
+        (
+          (settingId == 'studio' && isValidStudioSettings(incoming())) ||
+          (settingId == 'pricing' && isValidPricingConfig(incoming())) ||
+          (settingId == 'services' && isValidServicesCatalog(incoming()))
+        );
+      allow delete: if false;
+    }
+
+    match /adminSettings/{settingId} {
+      allow get, list: if isAdmin();
+      allow create, update: if isValidId(settingId) &&
+        isAdmin() &&
+        isValidAdminSettings(incoming()) &&
+        incoming().updatedAt == request.time;
+      allow delete: if false;
+    }
+
+    match /admins/{uid} {
+      allow get, list: if isAdmin();
+      allow create, update: if isValidId(uid) &&
+        isAdmin() &&
+        isValidAdminUser(incoming());
+      allow delete: if isValidId(uid) && isAdmin();
+    }
+  }
+}

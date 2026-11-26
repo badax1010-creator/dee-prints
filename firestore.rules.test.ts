@@ -1,0 +1,103 @@
+/**
+ * Firestore Security Rules Verification Specification for DEE PRINTS
+ * Run against Firebase Emulator Suite to verify all 12 adversarial payloads are rejected.
+ */
+
+export const DIRTY_DOZEN_CASES = [
+  {
+    id: 1,
+    name: 'Unauthenticated list on /orders',
+    operation: 'list',
+    path: '/orders',
+    auth: null,
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 2,
+    name: 'Non-admin authenticated read on /orders/{orderId}',
+    operation: 'get',
+    path: '/orders/DEE-TEST01',
+    auth: { uid: 'student-1', email: 'student@limkokwing.edu', email_verified: true },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 3,
+    name: 'Order create with pre-completed status',
+    operation: 'create',
+    path: '/orders/DEE-TEST02',
+    payload: { status: 'COMPLETED' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 4,
+    name: 'Order create with pre-confirmed payment status',
+    operation: 'create',
+    path: '/orders/DEE-TEST03',
+    payload: { payment: { method: 'orange_money', status: 'CONFIRMED', reference: '' } },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 5,
+    name: 'Order create with unsupported payment method (q_money)',
+    operation: 'create',
+    path: '/orders/DEE-TEST04',
+    payload: { payment: { method: 'q_money', status: 'PENDING', reference: '' } },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 6,
+    name: 'Order create with shadow ghost field',
+    operation: 'create',
+    path: '/orders/DEE-TEST05',
+    payload: { isVerified: true },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 7,
+    name: 'Order create with forged createdAt timestamp',
+    operation: 'create',
+    path: '/orders/DEE-TEST06',
+    payload: { createdAt: '2020-01-01T00:00:00.000Z' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 8,
+    name: 'Order create with poisoned document ID',
+    operation: 'create',
+    path: '/orders/invalid$$id_that_exceeds_bounds',
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 9,
+    name: 'Non-admin update on /orders/{orderId}',
+    operation: 'update',
+    path: '/orders/DEE-TEST01',
+    auth: { uid: 'student-1', email: 'student@limkokwing.edu', email_verified: true },
+    payload: { status: 'DELIVERED' },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 10,
+    name: 'Unverified admin email spoof',
+    operation: 'list',
+    path: '/orders',
+    auth: { uid: 'spoof-1', email: 'badax1010@gmail.com', email_verified: false },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 11,
+    name: 'Self-escalation write to /admins/{uid}',
+    operation: 'create',
+    path: '/admins/attacker-1',
+    auth: { uid: 'attacker-1', email: 'attacker@example.com', email_verified: true },
+    expected: 'PERMISSION_DENIED',
+  },
+  {
+    id: 12,
+    name: 'Unauthenticated read on /adminSettings/whatsapp',
+    operation: 'get',
+    path: '/adminSettings/whatsapp',
+    auth: null,
+    expected: 'PERMISSION_DENIED',
+  },
+] as const;

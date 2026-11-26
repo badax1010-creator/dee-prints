@@ -1,0 +1,289 @@
+{
+  "entities": {
+    "Order": {
+      "title": "PrintOrder",
+      "description": "Student assignment print order with customer details, single/multi-file PDF/DOC/DOCX metadata, selected services, configurable pricing breakdown, payment status, envelope personalization, WhatsApp bot session ref, and delivery instructions.",
+      "type": "object",
+      "properties": {
+        "orderId": {
+          "type": "string",
+          "pattern": "^(DEE|LIM)-[A-Z0-9\\-]+$",
+          "minLength": 5,
+          "maxLength": 40
+        },
+        "clientRequestId": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "minLength": 8,
+          "maxLength": 80
+        },
+        "submissionMode": {
+          "type": "string",
+          "enum": ["whatsapp_session", "web_checkout"]
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "ORDER RECEIVED",
+            "AWAITING PAYMENT",
+            "PAYMENT CONFIRMED",
+            "PRINTING IN PROGRESS",
+            "READY FOR COLLECTION",
+            "OUT FOR DELIVERY",
+            "SUCCESSFULLY DELIVERED",
+            "PRINTING",
+            "COMPLETED",
+            "DELIVERED",
+            "CANCELLED"
+          ]
+        },
+        "customer": {
+          "type": "object",
+          "description": "Student identification and academic metadata (supports optional alternative phone number)."
+        },
+        "document": {
+          "type": "object",
+          "description": "Primary uploaded document summary (filename, total pages, size, Firebase Storage path, and secure download reference)."
+        },
+        "documents": {
+          "type": "array",
+          "description": "Multi-file list of uploaded PDF, DOC, and DOCX files (up to 10 files)."
+        },
+        "selectedServices": {
+          "type": "array",
+          "description": "List of selected printing and finishing service IDs."
+        },
+        "printing": {
+          "type": "object",
+          "description": "Printing type, page distribution, sides, copies, paper size, stapling/binding preference, and brown envelope quantity."
+        },
+        "pricing": {
+          "type": "object",
+          "description": "Calculated itemized costs for printing, packaging, delivery fee, additional services, approved extra charges, total, and currency."
+        },
+        "payment": {
+          "type": "object",
+          "description": "Selected payment method, optional transaction reference, and verification status."
+        },
+        "delivery": {
+          "type": "object",
+          "description": "Campus delivery or collection instructions."
+        },
+        "envelopeLabel": {
+          "type": "object",
+          "description": "Generated personalized brown envelope label fields and Storage path."
+        },
+        "whatsappNotification": {
+          "type": "object",
+          "description": "Status of automated WhatsApp Cloud API administrator notification."
+        },
+        "emailNotification": {
+          "type": "object",
+          "description": "Status of automated email dispatch with attachments and student info to administrator inbox."
+        },
+        "whatsappSession": {
+          "type": "object",
+          "description": "WhatsApp bot conversational session state and conversation reference."
+        },
+        "quotation": {
+          "type": "object",
+          "description": "Quotation generated or sent by the WhatsApp bot or administrator."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "orderId",
+        "clientRequestId",
+        "status",
+        "customer",
+        "document",
+        "printing",
+        "pricing",
+        "payment",
+        "delivery",
+        "envelopeLabel",
+        "whatsappNotification",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "OrderAuditEntry": {
+      "title": "OrderAuditEntry",
+      "description": "Immutable audit trail record for order status, payment verification, quotations, and notification retries.",
+      "type": "object",
+      "properties": {
+        "orderId": {
+          "type": "string",
+          "pattern": "^(DEE|LIM)-[A-Z0-9\\-]+$",
+          "maxLength": 40
+        },
+        "action": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80
+        },
+        "actorEmail": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "previousValue": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "newValue": {
+          "type": "string",
+          "maxLength": 200
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 400
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["orderId", "action", "actorEmail", "createdAt"]
+    },
+    "StudioSettings": {
+      "title": "StudioSettings",
+      "description": "Public storefront configuration for currency and official Orange Money / Africell Money payment instructions.",
+      "type": "object",
+      "properties": {
+        "currency": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 12
+        },
+        "orangeMoneyDetails": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "afriMoneyDetails": {
+          "type": "string",
+          "maxLength": 300
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["currency", "orangeMoneyDetails", "afriMoneyDetails", "updatedAt"]
+    },
+    "PricingConfig": {
+      "title": "PricingConfig",
+      "description": "Administrator-defined dynamic pricing rates for B&W, colour, single/double sided, brown envelopes, binding, delivery fee, and additional services.",
+      "type": "object",
+      "properties": {
+        "currency": { "type": "string", "minLength": 1, "maxLength": 12 },
+        "bwPagePrice": { "type": "number" },
+        "colorPagePrice": { "type": "number" },
+        "singleSidedPrice": { "type": "number" },
+        "doubleSidedPrice": { "type": "number" },
+        "brownEnvelopePrice": { "type": "number" },
+        "bindingPrice": { "type": "number" },
+        "deliveryFee": { "type": "number" },
+        "additionalServiceCharge": { "type": "number" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": [
+        "currency",
+        "bwPagePrice",
+        "colorPagePrice",
+        "singleSidedPrice",
+        "doubleSidedPrice",
+        "brownEnvelopePrice",
+        "bindingPrice",
+        "deliveryFee",
+        "additionalServiceCharge",
+        "updatedAt"
+      ]
+    },
+    "ServicesCatalog": {
+      "title": "ServicesCatalog",
+      "description": "Administrator-configurable catalog of printing, packaging, scanning, photocopying, and delivery services.",
+      "type": "object",
+      "properties": {
+        "services": {
+          "type": "array",
+          "description": "List of enabled/disabled printing services (max 40)."
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["services", "updatedAt"]
+    },
+    "AdminPrivateSettings": {
+      "title": "AdminPrivateSettings",
+      "description": "Restricted administrator settings including recipient WhatsApp numbers, notification email, and WhatsApp template configuration.",
+      "type": "object",
+      "properties": {
+        "adminWhatsappNumbers": {
+          "type": "array",
+          "description": "List of administrator WhatsApp phone numbers (max 5)."
+        },
+        "adminNotificationEmail": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "whatsappTemplateName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "whatsappTemplateLanguage": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["adminWhatsappNumbers", "updatedAt"]
+    },
+    "AdminUser": {
+      "title": "AdminUser",
+      "description": "Authorized print shop administrator document keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "maxLength": 160
+        },
+        "addedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "addedAt"]
+    }
+  },
+  "firestore": {
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer print orders; creatable by validated submission, readable/updatable only by authorized admins."
+    },
+    "/orders/{orderId}/audit/{auditId}": {
+      "schema": { "$ref": "#/entities/OrderAuditEntry" },
+      "description": "Immutable audit trail entries for each order."
+    },
+    "/settings/{settingId}": {
+      "schema": { "$ref": "#/entities/StudioSettings" },
+      "description": "Public storefront settings: studio (StudioSettings), pricing (PricingConfig), services (ServicesCatalog)."
+    },
+    "/adminSettings/{settingId}": {
+      "schema": { "$ref": "#/entities/AdminPrivateSettings" },
+      "description": "Admin-only WhatsApp notification phone numbers and template configuration."
+    },
+    "/admins/{uid}": {
+      "schema": { "$ref": "#/entities/AdminUser" },
+      "description": "Authorized administrator UID directory."
+    }
+  }
+}
